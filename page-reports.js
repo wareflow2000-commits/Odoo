@@ -122,9 +122,9 @@ function ledgerMatchesLocation(l) {
 }
 function ledgerMatchesScope(l) {
   // Summary filters must select the item, not discard individual dated rows by
-  // matching a reference; otherwise opening/closing balances would be understated.
+  // matching a batch or reference; otherwise opening/closing balances would be understated.
   return ledgerMatchesLocation(l)
-    && textMatch(l.item_id, [l.item_code, l.item_name, l.batch_no].filter(Boolean).join(' '));
+    && textMatch(l.item_id, [l.item_code, l.item_name].filter(Boolean).join(' '));
 }
 function ledgerMatchesFilters(l) {
   return inRange(dateOf(l)) && ledgerMatchesLocation(l)
