@@ -440,7 +440,7 @@ function render() {
      ${btn('', 'onclick="OW.wms.reloadReports()"', 'ghost', 'fa-solid fa-rotate')}`)}
   ${controlPanel({
     breadcrumb: [{ label: tx('التحليلات', 'Analytics') }, { label: tx('التقارير', 'Reports') }, { label: kindLabel(F.kind) }],
-    searchPlaceholder: tx('ابحث بالصنف أو المرجع…', 'Search item or reference…'),
+    searchPlaceholder: F.kind === 'tx-summary' ? tx('ابحث بالصنف أو رمزه…', 'Search item or SKU…') : tx('ابحث بالصنف أو المرجع…', 'Search item or reference…'),
     filters: `
       <select class="o_filter_select" id="rpWarehouse">
         <option value="">${tx('كل المستودعات', 'All warehouses')}</option>
@@ -456,6 +456,7 @@ function render() {
       </select>
       <input type="date" class="o_filter_input" id="rpFrom" value="${F.from}" title="${tx('من', 'From')}">
       <input type="date" class="o_filter_input" id="rpTo" value="${F.to}" title="${tx('إلى', 'To')}">
+      ${F.kind === 'tx-summary' ? '' : `
       <select class="o_filter_select" id="rpStatus">
         <option value="">${tx('كل الحالات', 'All statuses')}</option>
         ${statuses.map(s => `<option value="${s}" ${F.status === s ? 'selected' : ''}>${statusLabel(s)}</option>`).join('')}
@@ -463,7 +464,7 @@ function render() {
       <select class="o_filter_select" id="rpType">
         <option value="">${tx('كل الأنواع', 'All types')}</option>
         ${types.map(t => `<option value="${t}" ${F.type === t ? 'selected' : ''}>${txLabel(t)}</option>`).join('')}
-      </select>
+      </select>`}
       <button class="o_btn o_btn_ghost o_btn_sm" id="rpReset">${tx('مسح', 'Reset')}</button>`
   })}
   <div class="o_page_body">
