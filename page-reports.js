@@ -27,7 +27,7 @@ const KINDS = [
   { value: 'low-stock', icon: 'fa-solid fa-triangle-exclamation', label: () => tx('مخزون منخفض', 'Low stock') },
   { value: 'inbound', icon: 'fa-solid fa-arrow-down-to-line', label: () => tx('التوريدات', 'Inbound') },
   { value: 'outbound', icon: 'fa-solid fa-arrow-up-from-line', label: () => tx('الصرفيات', 'Outbound') },
-  { value: 'tx-summary', icon: 'fa-solid fa-table-cells', label: () => tx('ملخص المعاملات', 'Transactions summary') },
+  { value: 'tx-summary', icon: 'fa-solid fa-table-cells', label: () => tx('ملخص حركة الأصناف', 'Item movement summary') },
   { value: 'warehouse-summary', icon: 'fa-solid fa-warehouse', label: () => tx('ملخص المستودعات', 'Warehouse summary') },
   { value: 'transfers', icon: 'fa-solid fa-truck-arrow-right', label: () => tx('التحويلات', 'Transfers') },
   { value: 'returns', icon: 'fa-solid fa-rotate-left', label: () => tx('المرتجعات', 'Returns') },
@@ -199,21 +199,110 @@ function reportData(kind) {
     }
 
     case 'tx-summary': {
-      const txs = store.get('transactions').filter(txMatch);
+      // Use the inventory ledger as the single movement source. Summing voucher lines
+      // or transfer tables alongside it would double-count the same stock movements.
+      const fromAt = F.from ? new Date(`${F.from}T00:00:00`).getTime() : Number.NEGATIVE_INFINITY;
+      const toAt = F.to ? new Date(`${F.to}T23:59:59.999`).getTime() : Number.POSITIVE_INFINITY;
+      const ledgerRows = store.get('inventory_ledger')
+        .map(l => {
+          const sh = store.byId('shelves', l.shelf_id) || {};
+          const date = dateOf(l);
+          return {
+            ...l,
+            _reportAt: date ? new Date(date).getTime() : NaN,
+            _reportWarehouseId: l.warehouse_id || sh.warehouse_id || '',
+            _reportAreaId: l.storage_area_id || sh.storage_area_id || sh.zone_id || ''
+          };
+        })
+        .filter(l => Number.isFinite(l._reportAt))
+        .filter(l => !F.warehouse || l._reportWarehouseId === F.warehouse)
+        .filter(l => !F.area || l._reportAreaId === F.area)
+        .filter(l => !F.shelf || l.shelf_id === F.shelf)
+        .filter(l => textMatch(l.item_id, [l.item_code, l.item_name].filter(Boolean).join(' ')))
+        .sort((a, b) => a._reportAt - b._reportAt
+          || String(a.created_at || '').localeCompare(String(b.created_at || ''))
+          || String(a.id || '').localeCompare(String(b.id || '')));
+
       const groups = new Map();
-      for (const t of txs) {
-        const k = `${t.transaction_type || '—'}|${t.status || '—'}`;
-        if (!groups.has(k)) groups.set(k, []);
-        groups.get(k).push(t);
+      for (const l of ledgerRows) {
+        const key = `${l.item_id}|${l._reportWarehouseId}`;
+        if (!groups.has(key)) {
+          groups.set(key, {
+            itemId: l.item_id,
+            warehouseId: l._reportWarehouseId,
+            itemCode: l.item_code || '',
+            itemName: l.item_name || '',
+            rows: [],
+            buckets: new Map()
+          });
+        }
+        const group = groups.get(key);
+        if (!group.itemCode && l.item_code) group.itemCode = l.item_code;
+        if (!group.itemName && l.item_name) group.itemName = l.item_name;
+        group.rows.push(l);
+
+        // running_balance is maintained per item + shelf + batch; do not sum a
+        // running balance from one batch with another. Aggregate buckets afterward.
+        const locationKey = l.shelf_id || `AREA:${l._reportAreaId}`;
+        const bucketKey = `${locationKey}|${String(l.batch_no || '')}`;
+        if (!group.buckets.has(bucketKey)) group.buckets.set(bucketKey, []);
+        group.buckets.get(bucketKey).push(l);
       }
-      const rows = [...groups.entries()].map(([k, list]) => {
-        const [ty, st] = k.split('|');
-        return [txLabel(ty), statusLabel(st), list.length,
-          list.reduce((n, t) => n + txLines(t.id).reduce((a, l) => a + Number(l.quantity || 0), 0), 0)];
-      });
+
+      // Anchor each bucket at the balance immediately before its first ledger
+      // row, then roll forward deltas. This also supports a history whose earliest
+      // retained row is not an opening-balance voucher.
+      const balanceAt = (bucketRows, cutoff) => {
+        if (!bucketRows.length) return 0;
+        const first = bucketRows[0];
+        const firstDelta = Number(first.delta || 0);
+        const firstBalance = Number(first.running_balance);
+        const hasFirstBalance = first.running_balance != null && Number.isFinite(firstBalance);
+        const anchor = hasFirstBalance ? firstBalance - firstDelta : 0;
+        return anchor + bucketRows.reduce((sum, l) => {
+          return l._reportAt <= cutoff ? sum + Number(l.delta || 0) : sum;
+        }, 0);
+      };
+
+      const reportRows = [];
+      for (const group of groups.values()) {
+        const periodRows = group.rows.filter(l => l._reportAt >= fromAt && l._reportAt <= toAt);
+        const openingCutoff = Number.isFinite(fromAt) ? fromAt - 1 : Number.NEGATIVE_INFINITY;
+        const opening = [...group.buckets.values()]
+          .reduce((sum, bucketRows) => sum + balanceAt(bucketRows, openingCutoff), 0);
+        const inbound = periodRows.reduce((sum, l) => sum + Math.max(0, Number(l.delta || 0)), 0);
+        const outbound = periodRows.reduce((sum, l) => sum + Math.max(0, -Number(l.delta || 0)), 0);
+        const closing = [...group.buckets.values()]
+          .reduce((sum, bucketRows) => sum + balanceAt(bucketRows, toAt), 0);
+
+        // Omit items with neither stock nor movement in the selected period.
+        if (!periodRows.length && Math.abs(opening) < 1e-9 && Math.abs(closing) < 1e-9) continue;
+
+        const item = store.byId('items', group.itemId) || {};
+        const catalogName = itemNameOnly(group.itemId);
+        const displayName = catalogName && catalogName !== '—' ? catalogName : (group.itemName || '—');
+        const code = item.code || group.itemCode || '';
+        const unit = item.base_unit || group.rows.find(l => l.unit)?.unit || '—';
+        const warehouse = group.warehouseId ? warehouseName(group.warehouseId) : '—';
+        reportRows.push({
+          code,
+          warehouse,
+          values: [code, displayName, unit, warehouse,
+            Math.abs(opening) < 1e-10 ? 0 : opening,
+            Math.abs(inbound) < 1e-10 ? 0 : inbound,
+            Math.abs(outbound) < 1e-10 ? 0 : outbound,
+            Math.abs(closing) < 1e-10 ? 0 : closing]
+        });
+      }
+      reportRows.sort((a, b) => String(a.code).localeCompare(String(b.code), undefined, { numeric: true })
+        || String(a.warehouse).localeCompare(String(b.warehouse)));
+
       return {
-        headers: [h('النوع', 'Type'), h('الحالة', 'Status'), h('عدد السندات', 'Voucher count'), h('إجمالي الكمية', 'Total qty')],
-        rows, numeric: [2, 3]
+        headers: [h('رمز الصنف', 'SKU'), h('الصنف', 'Item'), h('الوحدة الأساسية', 'Base unit'),
+          h('المستودع', 'Warehouse'), h('رصيد أول المدة', 'Opening balance'),
+          h('إجمالي الوارد', 'Total inbound'), h('إجمالي المنصرف', 'Total outbound'),
+          h('رصيد آخر المدة', 'Closing balance')],
+        rows: reportRows.map(r => r.values), numeric: [4, 5, 6, 7]
       };
     }
 
