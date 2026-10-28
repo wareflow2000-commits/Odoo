@@ -45,7 +45,7 @@ const addDaysISO = (date, days) => {
 
 const F = {
   kind: 'movements', from: startOfMonthISO(), to: todayISO(),
-  expiryFrom: todayISO(), expiryTo: addDaysISO(todayISO(), 90),
+  expiryFrom: '', expiryTo: addDaysISO(todayISO(), 90),
   warehouse: '', area: '', shelf: '', status: '', type: '', search: ''
 };
 
@@ -74,7 +74,8 @@ function stockMatch(s) {
   const sh = store.byId('shelves', s.shelf_id) || s._shelf || {};
   const wh = s.warehouse_id || sh.warehouse_id;
   if (F.warehouse && wh !== F.warehouse) return false;
-  if (F.area && String(shelfArea(sh)) !== F.area) return false;
+  const areaId = s.storage_area_id || shelfArea(sh);
+  if (F.area && String(areaId) !== F.area) return false;
   if (F.shelf && s.shelf_id !== F.shelf) return false;
   return textMatch(s.item_id, s.batch_no);
 }
@@ -86,13 +87,17 @@ function txMatch(t) {
   if (F.type && t.transaction_type !== F.type) return false;
   if (F.area) {
     const direct = [t.storage_area_id, t.zone_id].filter(Boolean).includes(F.area);
-    const viaLines = txLines(t.id).some(l => String(l.storage_area_id || store.byId('shelves', l.shelf_id)?.storage_area_id || '') === F.area);
+    const viaLines = txLines(t.id).some(l => {
+      const shelf = store.byId('shelves', l.shelf_id) || {};
+      return String(l.storage_area_id || shelf.storage_area_id || shelf.zone_id || '') === F.area;
+    });
     if (!direct && !viaLines) return false;
   }
   if (F.shelf && !txLines(t.id).some(l => l.shelf_id === F.shelf)) return false;
   if (F.search) {
-    const hide = [t.supplier, t.receiver_name, t.reference_no, t.notes].some(v => String(v || '').toLowerCase().includes(F.search.toLowerCase()));
-    const viaItem = txLines(t.id).some(l => textMatch(l.item_id));
+    const hide = [t.supplier, t.receiver_name, t.reference_no, t.external_reference, t.notes]
+      .some(v => String(v || '').toLowerCase().includes(F.search.toLowerCase()));
+    const viaItem = txLines(t.id).some(l => textMatch(l.item_id, [l.batch_no, l.notes].filter(Boolean).join(' ')));
     if (!hide && !viaItem) return false;
   }
   return true;
@@ -110,14 +115,20 @@ function ledgerLocationLabel(l) {
   if (l?.storage_area_id) return areaName(l.storage_area_id);
   return '—';
 }
-function ledgerMatchesScope(l) {
+function ledgerMatchesLocation(l) {
   return (!F.warehouse || ledgerWarehouseId(l) === F.warehouse)
     && (!F.area || String(ledgerAreaId(l)) === F.area)
-    && (!F.shelf || l.shelf_id === F.shelf)
-    && textMatch(l.item_id, [l.item_code, l.item_name, l.batch_no, l.source_ref].filter(Boolean).join(' '));
+    && (!F.shelf || l.shelf_id === F.shelf);
+}
+function ledgerMatchesScope(l) {
+  // Summary filters must select the item, not discard individual dated rows by
+  // matching a reference; otherwise opening/closing balances would be understated.
+  return ledgerMatchesLocation(l)
+    && textMatch(l.item_id, [l.item_code, l.item_name, l.batch_no].filter(Boolean).join(' '));
 }
 function ledgerMatchesFilters(l) {
-  return inRange(dateOf(l)) && ledgerMatchesScope(l);
+  return inRange(dateOf(l)) && ledgerMatchesLocation(l)
+    && textMatch(l.item_id, [l.item_code, l.item_name, l.batch_no, l.source_ref].filter(Boolean).join(' '));
 }
 function ledgerMovementTypeLabel(l) {
   const type = String(l?.source_type || '').toUpperCase();
@@ -563,8 +574,13 @@ function render() {
   const typeOptions = [...new Set(store.get('transactions').map(t => t.transaction_type).filter(Boolean))];
   const showStatusFilter = ['audit', 'stocktake', 'transfers', 'returns', 'inbound', 'outbound', 'pending'].includes(F.kind);
   const showTypeFilter = ['inbound', 'outbound', 'pending'].includes(F.kind);
+  const showDateFilters = !['balances', 'low-stock', 'warehouse-summary'].includes(F.kind);
+  const showLocationFilters = F.kind !== 'audit';
   const reportFrom = F.kind === 'expiry' ? F.expiryFrom : F.from;
   const reportTo = F.kind === 'expiry' ? F.expiryTo : F.to;
+  const reportRangeLabel = showDateFilters
+    ? (reportFrom || '—') + ' → ' + (reportTo || '—')
+    : tx('الرصيد الحالي', 'Current stock');
 
   return `
   ${pageHead(tx('التقارير', 'Reports'),
@@ -584,6 +600,7 @@ function render() {
         <option value="">${tx('كل المستودعات', 'All warehouses')}</option>
         ${warehouseOptions().map(o => `<option value="${o.value}" ${F.warehouse === o.value ? 'selected' : ''}>${o.label}</option>`).join('')}
       </select>
+${showLocationFilters ? `
       <select class="o_filter_select" id="rpArea">
         <option value="">${tx('كل المناطق', 'All areas')}</option>
         ${areaOptions(F.warehouse).map(o => `<option value="${o.value}" ${F.area === o.value ? 'selected' : ''}>${o.label}</option>`).join('')}
@@ -591,9 +608,10 @@ function render() {
       <select class="o_filter_select" id="rpShelf">
         <option value="">${tx('كل الأرفف', 'All shelves')}</option>
         ${shelfOptions({ warehouseId: F.warehouse, storageAreaId: F.area }).map(o => `<option value="${o.value}" ${F.shelf === o.value ? 'selected' : ''}>${o.label}</option>`).join('')}
-      </select>
+      </select>` : ''}
+      ${showDateFilters ? `
       <input type="date" class="o_filter_input" id="rpFrom" value="${reportFrom}" title="${F.kind === 'expiry' ? tx('تاريخ الصلاحية من', 'Expiry from') : tx('من', 'From')}">
-      <input type="date" class="o_filter_input" id="rpTo" value="${reportTo}" title="${F.kind === 'expiry' ? tx('تاريخ الصلاحية إلى', 'Expiry to') : tx('إلى', 'To')}">
+      <input type="date" class="o_filter_input" id="rpTo" value="${reportTo}" title="${F.kind === 'expiry' ? tx('تاريخ الصلاحية إلى', 'Expiry to') : tx('إلى', 'To')}">` : ''}
       ${showStatusFilter ? `
       <select class="o_filter_select" id="rpStatus">
         <option value="">${tx('كل الحالات', 'All statuses')}</option>
@@ -613,7 +631,7 @@ function render() {
     </div>
     <div class="o_list_summary">
       <span><b>${kindLabel(F.kind)}</b> — ${fmtNum(count)} ${tx('سطر', 'rows')}</span>
-      <span>${reportFrom || '—'} → ${reportTo || '—'}</span>
+      <span>${reportRangeLabel}</span>
     </div>
     ${card('', table(heads, rows, {
       emptyTitle: tx('لا توجد بيانات مطابقة', 'No matching data'),
@@ -651,12 +669,16 @@ function bind(_, main) {
   const reset = main.querySelector('#rpReset');
   if (reset) reset.onclick = () => {
     Object.assign(F, { warehouse: '', area: '', shelf: '', status: '', type: '', search: '',
-      from: startOfMonthISO(), to: todayISO(), expiryFrom: todayISO(), expiryTo: addDaysISO(todayISO(), 90) });
+      from: startOfMonthISO(), to: todayISO(), expiryFrom: '', expiryTo: addDaysISO(todayISO(), 90) });
     reload();
   };
   main.querySelectorAll('[data-kind]').forEach(b => b.onclick = () => {
     const nextKind = b.dataset.kind;
-    if (nextKind !== F.kind) { F.status = ''; F.type = ''; }
+    if (nextKind !== F.kind) {
+      F.status = '';
+      F.type = '';
+      if (nextKind === 'audit') { F.area = ''; F.shelf = ''; }
+    }
     F.kind = nextKind;
     reload();
   });
