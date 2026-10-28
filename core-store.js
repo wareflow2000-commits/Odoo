@@ -1,0 +1,1340 @@
+// ============================================================================
+// OW — central store
+// ----------------------------------------------------------------------------
+// One in-memory snapshot (store.data), persisted to localStorage + optional
+// SQLite/OPFS, hydrated from Supabase, with offline queues:
+//   • master queue  → warehouses/items/units/... (non-financial master data)
+//   • tx outbox     → full transaction bundles (stock is NEVER posted offline)
+//   • offline auth  → PBKDF2 verifier cached by core-auth.js
+// ============================================================================
+import { from, rpc } from './core-supabase.js';
+import { uuid, isUuid } from './core-utils.js';
+import { isAr } from './core-i18n.js';
+import { ensureOnlineSession } from './core-auth.js';
+
+export { isUuid };
+
+const LS_KEY = 'orshap_wms_data_v5';
+const LS_LANG = 'orshap_lang';
+const MASTER_PREFIX = 'orshap_master_outbox_v1:';
+const OUTBOX_PREFIX = 'orshap_tx_outbox_v1:';
+
+// Supabase surfaces transport failures as several different messages depending
+// on browser/fetch implementation. Treat them all as "queue it and retry later",
+// never as a validation error the user has to manually recreate.
+const NETWORK_ERROR_RE = /failed to fetch|fetch failed|networkerror|network request failed|load failed|network connection|connection (?:lost|failed|reset)|econn(?:refused|reset|aborted)|enotfound|socket hang up|timed? ?out|offline/i;
+const isNetworkFailure = error => NETWORK_ERROR_RE.test(String(error?.message ?? error ?? ''));
+const hasLiveSession = () => !!window.__session?.id && !window.__session.offline;
+const requireLiveConnection = (ar, en) => {
+  if (!navigator.onLine || !hasLiveSession()) throw new Error(isAr() ? ar : en);
+};
+const signInOnlineMessage = () => isAr()
+  ? 'سجّل الدخول عبر الإنترنت مرة واحدة لاستعادة جلسة الخادم ثم أعد المزامنة'
+  : 'Sign in online once to restore the server session, then sync again';
+
+// OW posts stock only online. Offline entry is limited to receipts and issues
+// from the user's single explicitly assigned warehouse.
+const OFFLINE_TX_TYPES = new Set(['GRN', 'ISSUE']);
+
+export const TABLES = [
+  'warehouses', 'zones', 'storage_areas', 'warehouse_storage_areas',
+  'legacy_section_classification',
+  'sections', 'shelves', 'items', 'item_categories', 'units',
+  'item_unit_conversions', 'stock', 'transactions', 'transaction_lines',
+  'stocktake_sessions', 'stocktake_lines', 'stocktake_logs',
+  'stock_transfers', 'stock_transfer_orders',
+  'inventory_ledger', 'transaction_ledger', 'transaction_audit',
+  'audit_logs', 'system_settings', 'profiles', 'permissions',
+  'role_permissions', 'archive_movements', 'archive_balances', 'sync_log'
+];
+
+// Tables that can be edited offline and replayed later (no stock/financial impact).
+export const MASTER_TABLES = new Set([
+  'warehouses', 'zones', 'storage_areas',
+  'sections', 'shelves', 'items', 'item_categories', 'units',
+  'item_unit_conversions', 'system_settings'
+]);
+
+export const ELEVATED_ROLES = ['SUPER_ADMIN', 'ADMIN', 'MANAGER', 'WAREHOUSE_MANAGER'];
+export const AUTO_APPROVE_ROLES = ['SUPER_ADMIN', 'ADMIN', 'MANAGER', 'WAREHOUSE_MANAGER'];
+
+export const store = {
+  data: Object.fromEntries(TABLES.map(t => [t, []])),
+  loaded: false,
+  offline: false,
+  lastSync: null,
+  noWarehouseAccess: false,
+  loading: false,
+  error: null,
+  listeners: new Set(),
+  get(table) { return this.data[table] || (this.data[table] = []); },
+  byId(table, id) { return this.get(table).find(r => r.id === id) || null; },
+  emit() {
+    for (const fn of this.listeners) { try { fn(this); } catch (e) { console.warn(e); } }
+    window.dispatchEvent(new CustomEvent('orshap-store-updated'));
+  },
+  subscribe(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
+};
+
+export function rows(table) { return store.get(table); }
+export function byId(table, id) { return store.byId(table, id); }
+export function uid() { return uuid(); }
+
+const currentUserId = () => window.__session?.id || 'anonymous';
+const roleOf = () => String(window.__session?.role || '').toUpperCase();
+const isElevated = () => ELEVATED_ROLES.includes(roleOf());
+
+export function offlineTransactionTypeAllowed(type) {
+  return OFFLINE_TX_TYPES.has(String(type || '').toUpperCase());
+}
+
+export function offlineWarehouseAllowed(warehouseId) {
+  const session = window.__session;
+  if (!warehouseId || !session?.id) return false;
+  const profiles = [session.profile, byId('profiles', session.id)].filter(Boolean);
+  const profile = profiles.find(p => Array.isArray(p.assigned_warehouse_ids) && p.assigned_warehouse_ids.length)
+    || profiles.find(p => Array.isArray(p.assigned_warehouse_ids))
+    || session.profile
+    || {};
+  const assigned = [...new Set((profile.assigned_warehouse_ids || []).filter(Boolean))];
+  if (assigned.length !== 1 || assigned[0] !== warehouseId) return false;
+  const accessible = Array.isArray(profile.accessible_warehouse_ids)
+    ? profile.accessible_warehouse_ids
+    : null;
+  return !accessible || accessible.includes(warehouseId);
+}
+
+/* ── local persistence ──────────────────────────────────────────────────── */
+
+let persistTimer = null;
+export function persist(immediate = false) {
+  const write = () => {
+    try {
+      const payload = { ...store.data, __cached_user_id: currentUserId(), __saved_at: new Date().toISOString() };
+      localStorage.setItem(LS_KEY, JSON.stringify(payload));
+      if (window.orshapSQLite?.saveState) {
+        window.orshapSQLite.saveState(store.data).catch(() => {});
+      }
+    } catch (e) {
+      console.warn('[store] local persist failed', e);
+    }
+  };
+  if (immediate) { clearTimeout(persistTimer); write(); return; }
+  clearTimeout(persistTimer);
+  persistTimer = setTimeout(write, 250);
+}
+
+export function loadLocal() {
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (!raw) return false;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return false;
+    for (const t of TABLES) {
+      if (Array.isArray(parsed[t])) store.data[t] = parsed[t];
+    }
+    enrichAll();
+    store.loaded = true;
+    return true;
+  } catch (e) {
+    console.warn('[store] local load failed', e);
+    return false;
+  }
+}
+
+/* ── enrichment / relations ─────────────────────────────────────────────── */
+
+function index(list, key = 'id') {
+  const m = new Map();
+  for (const r of list) m.set(r[key], r);
+  return m;
+}
+
+export function enrichAll() {
+  const shelves = index(store.get('shelves'));
+  const warehouses = index(store.get('warehouses'));
+  const zones = index(store.get('zones'));
+  const sections = index(store.get('sections'));
+  const items = index(store.get('items'));
+  const profiles = index(store.get('profiles'));
+
+  store.data.stock = store.get('stock').map(s => {
+    const sh = shelves.get(s.shelf_id) || {};
+    return {
+      ...s,
+      warehouse_id: sh.warehouse_id || s.warehouse_id || null,
+      zone_id: sh.zone_id || s.zone_id || null,
+      section_id: sh.section_id || s.section_id || null,
+      storage_area_id: s.storage_area_id || sh.storage_area_id || null,
+      _shelf: sh
+    };
+  });
+
+  const linesByTx = new Map();
+  for (const l of store.get('transaction_lines')) {
+    if (!linesByTx.has(l.transaction_id)) linesByTx.set(l.transaction_id, []);
+    linesByTx.get(l.transaction_id).push({ ...l, _item: items.get(l.item_id), _shelf: shelves.get(l.shelf_id) });
+  }
+  store.data.transactions = store.get('transactions').map(t => {
+    const lines = linesByTx.get(t.id) || [];
+    return {
+      ...t,
+      note: t.note ?? t.notes ?? '',
+      total_qty: lines.reduce((n, l) => n + Number(l.quantity || 0), 0),
+      line_count: lines.length,
+      transaction_lines: lines,
+      _warehouse: warehouses.get(t.warehouse_id),
+      _creator: profiles.get(t.created_by)
+    };
+  });
+
+  store.data.stock_transfers = store.get('stock_transfers').map(t => ({
+    ...t,
+    _item: items.get(t.item_id),
+    _source: warehouses.get(t.source_warehouse_id),
+    _destination: warehouses.get(t.destination_warehouse_id),
+    _source_shelf: shelves.get(t.source_shelf_id),
+    _dest_shelf: shelves.get(t.destination_shelf_id)
+  }));
+
+  store.data.stocktake_lines = store.get('stocktake_lines').map(l => ({
+    ...l,
+    _item: items.get(l.item_id),
+    _shelf: shelves.get(l.shelf_id),
+    variance: l.variance ?? (l.counted_qty == null ? null : Number(l.counted_qty) - Number(l.system_qty || 0))
+  }));
+
+  store.data.stocktake_sessions = store.get('stocktake_sessions').map(s => ({
+    ...s,
+    _warehouse: warehouses.get(s.warehouse_id),
+    _creator: profiles.get(s.created_by),
+    _lines: store.get('stocktake_lines').filter(l => l.session_id === s.id)
+  }));
+
+  store.data.stock_transfer_orders = store.get('stock_transfer_orders').map(o => ({
+    ...o,
+    _source: warehouses.get(o.source_warehouse_id),
+    _destination: warehouses.get(o.destination_warehouse_id),
+    _transfers: store.get('stock_transfers').filter(t => t.transfer_order_id === o.id)
+  }));
+
+  // convenience for facilities legacy sections
+  store.data.sections = store.get('sections').map(s => ({
+    ...s,
+    _zone: zones.get(s.zone_id),
+    _warehouse: warehouses.get(s.warehouse_id)
+  }));
+}
+
+/* ── remote pull ────────────────────────────────────────────────────────── */
+
+const REQUIRED = new Set(['warehouses', 'items', 'stock', 'transactions', 'transaction_lines', 'shelves']);
+
+export async function pullAll({ silent = false } = {}) {
+  if (store.loading) return store.data;
+  // Offline sessions (and real offline) must never hit the network: with only the
+  // anon key the RLS-protected tables return empty arrays, which would wipe the
+  // local cache. Read the cached snapshot instead.
+  const offlineSession = !!window.__session?.offline;
+  if (!navigator.onLine || offlineSession) {
+    store.offline = true;
+    loadLocal();
+    // The persisted cache already contains the overlay, but reapplying it keeps
+    // the local queue visible even when another tab cleared the snapshot.
+    applyMasterOverlay();
+    applyOutboxOverlay();
+    store.loaded = true;
+    return store.data;
+  }
+  store.loading = true;
+  store.error = null;
+  try {
+    const results = await Promise.all(TABLES.map(async t => {
+      try {
+        let res;
+        if (t === 'stocktake_lines') {
+          res = await rpc('list_stocktake_lines_secure');
+          if (res) {
+            // Secure RPC omits settlement columns; try a direct read for those
+            // (permitted only for stocktake/table permissions).
+            let settle = [];
+            try {
+              const r2 = await (await from('stocktake_lines')).select('*');
+              if (!r2.error) settle = r2.data || [];
+            } catch (_) {}
+            if (settle.length) {
+              const m = new Map(settle.map(x => [x.id, x]));
+              res = res.map(x => ({ ...x, ...(m.get(x.id) || {}) }));
+            }
+            return [t, res || []];
+          }
+        }
+        res = await (await from(t)).select('*');
+        if (res.error) throw res.error;
+        return [t, res.data || []];
+      } catch (e) {
+        if (REQUIRED.has(t)) throw new Error(`${t}: ${e.message || e}`);
+        console.warn(`[store] optional table ${t} unavailable:`, e.message || e);
+        return [t, []];
+      }
+    }));
+    for (const [t, list] of results) store.data[t] = list;
+
+    // Keep the previous cache for tables that failed entirely (offline resilience).
+    enrichAll();
+    applyMasterOverlay();
+    applyOutboxOverlay();
+    applyAccessFilter();
+    store.offline = false;
+    store.loaded = true;
+    store.lastSync = new Date().toISOString();
+    persist(true);
+    store.emit();
+    return store.data;
+  } catch (e) {
+    store.error = e;
+    console.error('[store] pull failed', e);
+    if (!store.loaded) loadLocal();
+    store.offline = !navigator.onLine;
+    store.loaded = true;
+    throw e;
+  } finally {
+    store.loading = false;
+  }
+}
+
+function applyAccessFilter() {
+  const user = window.__session;
+  const elevated = isElevated();
+  const assigned = Array.isArray(user?.profile?.assigned_warehouse_ids)
+    ? user.profile.assigned_warehouse_ids : [];
+  store.noWarehouseAccess = !elevated && assigned.length === 0;
+  if (elevated || !assigned.length) return;
+
+  const allow = new Set(assigned);
+  store.data.warehouses = store.get('warehouses').filter(w => allow.has(w.id));
+  store.data.zones = store.get('zones').filter(z => allow.has(z.warehouse_id));
+  store.data.storage_areas = store.get('storage_areas').filter(a => allow.has(a.warehouse_id));
+  store.data.sections = store.get('sections').filter(s => allow.has(s.warehouse_id));
+  store.data.shelves = store.get('shelves').filter(s => allow.has(s.warehouse_id));
+  const shelfIds = new Set(store.data.shelves.map(s => s.id));
+  store.data.stock = store.get('stock').filter(s => shelfIds.has(s.shelf_id));
+  const itemIds = new Set(store.data.stock.map(s => s.item_id));
+  store.data.items = store.get('items').filter(i => itemIds.has(i.id) || allow.has(i.default_warehouse_id));
+  const txIds = new Set(store.get('transactions').filter(t => allow.has(t.warehouse_id)).map(t => t.id));
+  store.data.transactions = store.get('transactions').filter(t => txIds.has(t.id));
+  store.data.transaction_lines = store.get('transaction_lines').filter(l => txIds.has(l.transaction_id));
+  const sessionIds = new Set(store.get('stocktake_sessions').filter(s => allow.has(s.warehouse_id)).map(s => s.id));
+  store.data.stocktake_sessions = store.get('stocktake_sessions').filter(s => sessionIds.has(s.id));
+  store.data.stocktake_lines = store.get('stocktake_lines').filter(l => sessionIds.has(l.session_id));
+  store.data.stocktake_logs = store.get('stocktake_logs').filter(l => sessionIds.has(l.session_id));
+  store.data.stock_transfers = store.get('stock_transfers').filter(t => allow.has(t.source_warehouse_id) || allow.has(t.destination_warehouse_id));
+  store.data.stock_transfer_orders = store.get('stock_transfer_orders').filter(o => allow.has(o.source_warehouse_id) || allow.has(o.destination_warehouse_id));
+  for (const t of ['inventory_ledger', 'transaction_ledger', 'transaction_audit', 'archive_movements', 'archive_balances']) {
+    store.data[t] = store.get(t).filter(r => !r.warehouse_id || allow.has(r.warehouse_id));
+  }
+  enrichAll();
+}
+
+/* ── offline master queue ───────────────────────────────────────────────── */
+
+export function masterQueue() {
+  try {
+    const a = JSON.parse(localStorage.getItem(MASTER_PREFIX + currentUserId()) || '[]');
+    return Array.isArray(a) ? a : [];
+  } catch (_) { return []; }
+}
+function masterQueueWrite(a) {
+  localStorage.setItem(MASTER_PREFIX + currentUserId(), JSON.stringify(a));
+  window.dispatchEvent(new CustomEvent('orshap-master-queue-changed', { detail: { count: a.filter(x => x.status !== 'SYNCED').length } }));
+}
+
+function queueMaster(kind, table, id, row) {
+  if (!MASTER_TABLES.has(table)) throw new Error(
+    isAr() ? 'هذه العملية تتطلب اتصالاً بالإنترنت' : 'This operation requires an internet connection');
+  if (!window.__session?.id) throw new Error(isAr() ? 'سجّل الدخول أولًا' : 'Sign in first');
+  const pk = table === 'system_settings' ? 'key' : 'id';
+  const savedId = id || row?.[pk] || uid();
+  const payload = { ...(row || {}), [pk]: savedId };
+  const list = store.get(table);
+  const i = list.findIndex(x => x[pk] === savedId);
+  if (kind === 'insert') {
+    if (!payload.created_at && pk === 'id') payload.created_at = new Date().toISOString();
+    if (i < 0) list.push(payload); else list[i] = payload;
+  } else if (kind === 'update') {
+    const next = { ...(i >= 0 ? list[i] : {}), ...payload, updated_at: new Date().toISOString() };
+    if (i >= 0) list[i] = next; else list.push(next);
+  } else if (kind === 'delete') {
+    if (i >= 0) list.splice(i, 1);
+  }
+  const q = masterQueue();
+  q.push({ operation_id: uid(), kind, table, id: savedId, pk, row: payload, created_at: new Date().toISOString(), status: 'PENDING', attempts: 0 });
+  masterQueueWrite(q);
+  enrichAll();
+  persist(true);
+  store.emit();
+  return payload;
+}
+
+function applyMasterOverlay() {
+  const q = masterQueue();
+  if (!q.length) return;
+  for (const op of q) {
+    if (!MASTER_TABLES.has(op.table)) continue;
+    const pk = op.pk || (op.table === 'system_settings' ? 'key' : 'id');
+    const list = store.get(op.table);
+    const i = list.findIndex(x => x[pk] === op.id);
+    if (op.kind === 'delete') { if (i >= 0) list.splice(i, 1); }
+    else if (op.kind === 'insert') { if (i < 0) list.push({ ...op.row }); else list[i] = { ...list[i], ...op.row }; }
+    else if (op.kind === 'update') { if (i >= 0) list[i] = { ...list[i], ...op.row }; else list.push({ ...op.row }); }
+  }
+  enrichAll();
+}
+
+export async function flushMasterQueue() {
+  if (!navigator.onLine || !window.__session?.id) return 0;
+  if (!(await ensureOnlineSession())) return 0;
+  const q = masterQueue();
+  if (!q.length) return 0;
+  let changed = false, done = 0;
+  for (let i = 0; i < q.length;) {
+    const op = q[i];
+    if (!op || typeof op !== 'object' || Array.isArray(op)) {
+      q.splice(i, 1);
+      changed = true;
+      continue;
+    }
+    if (op.status === 'CONFLICT' || op.status === 'ERROR') { i++; continue; }
+    const pk = op.table === 'system_settings' ? 'key' : 'id';
+    const valid = MASTER_TABLES.has(op.table)
+      && ['insert', 'update', 'delete'].includes(op.kind)
+      && op.pk === pk
+      && !!op.id
+      && (op.kind === 'delete' || (op.row && typeof op.row === 'object'
+        && !Array.isArray(op.row) && op.row[pk] === op.id));
+    if (!valid) {
+      op.status = 'ERROR';
+      op.last_error = 'Invalid or unsupported offline master-data operation; retained for review and not sent to the server.';
+      changed = true;
+      i++;
+      continue;
+    }
+    try {
+      let result;
+      if (op.kind === 'insert') {
+        const row = { ...op.row };
+        delete row.variance;
+        result = await (await from(op.table)).upsert(row, { onConflict: pk });
+      } else if (op.kind === 'update') {
+        const patch = { ...op.row };
+        delete patch.variance;
+        delete patch[pk];
+        result = await (await from(op.table)).update(patch).eq(pk, op.id);
+      } else {
+        result = await (await from(op.table)).delete().eq(pk, op.id);
+      }
+      if (result?.error) throw result.error;
+      q.splice(i, 1);
+      changed = true;
+      done++;
+    } catch (e) {
+      op.attempts = (op.attempts || 0) + 1;
+      op.last_error = String(e?.message || e);
+      op.status = isNetworkFailure(e) ? 'PENDING' : 'ERROR';
+      changed = true;
+      if (op.status === 'PENDING') break;
+      i++;
+    }
+  }
+  if (changed) masterQueueWrite(q);
+  if (!q.length) await pullAll({ silent: true }).catch(() => {});
+  return done;
+}
+
+export async function retryQueueErrors() {
+  let n = 0;
+  for (const key of [MASTER_PREFIX + currentUserId(), OUTBOX_PREFIX + currentUserId()]) {
+    try {
+      const q = JSON.parse(localStorage.getItem(key) || '[]');
+      if (!Array.isArray(q)) continue;
+      for (const op of q) if (op.status === 'ERROR') { op.status = 'PENDING'; op.last_error = null; n++; }
+      localStorage.setItem(key, JSON.stringify(q));
+    } catch (e) { console.warn(e); }
+  }
+  return n;
+}
+
+/* ── generic row mutations ──────────────────────────────────────────────── */
+
+export async function insertRow(table, row) {
+  if (!navigator.onLine && MASTER_TABLES.has(table)) return queueMaster('insert', table, null, row);
+  try {
+    const { data, error } = await (await from(table)).insert(row).select().single();
+    if (error) throw error;
+    await pullAll({ silent: true }).catch(() => {});
+    return data;
+  } catch (e) {
+    if (MASTER_TABLES.has(table) && isNetworkFailure(e)) {
+      return queueMaster('insert', table, null, row);
+    }
+    throw e;
+  }
+}
+
+export async function updateRow(table, id, patch) {
+  if (!navigator.onLine && MASTER_TABLES.has(table)) return queueMaster('update', table, id, patch);
+  try {
+    const { data, error } = await (await from(table)).update(patch).eq('id', id).select().single();
+    if (error) throw error;
+    await pullAll({ silent: true }).catch(() => {});
+    return data;
+  } catch (e) {
+    if (MASTER_TABLES.has(table) && isNetworkFailure(e)) {
+      return queueMaster('update', table, id, patch);
+    }
+    throw e;
+  }
+}
+
+export async function deleteRow(table, id) {
+  if (!navigator.onLine && MASTER_TABLES.has(table)) return queueMaster('delete', table, id, {});
+  try {
+    const { error } = await (await from(table)).delete().eq('id', id);
+    if (error) throw error;
+    await pullAll({ silent: true }).catch(() => {});
+    return true;
+  } catch (e) {
+    if (MASTER_TABLES.has(table) && isNetworkFailure(e)) {
+      return queueMaster('delete', table, id, {});
+    }
+    throw e;
+  }
+}
+
+export async function upsertSetting(key, value, description = '') {
+  const row = { key, value: String(value), description, updated_at: new Date().toISOString() };
+  if (!navigator.onLine) {
+    queueMaster('update', 'system_settings', key, row);
+    return row;
+  }
+  try {
+    const { error } = await (await from('system_settings')).upsert(row, { onConflict: 'key' });
+    if (error) throw error;
+    const list = store.get('system_settings');
+    const i = list.findIndex(x => x.key === key);
+    if (i >= 0) list[i] = { ...list[i], ...row }; else list.push(row);
+    persist(true);
+    return row;
+  } catch (e) {
+    if (isNetworkFailure(e)) {
+      queueMaster('update', 'system_settings', key, row);
+      return row;
+    }
+    throw e;
+  }
+}
+
+export function setting(key, fallback = null) {
+  const row = store.get('system_settings').find(r => r.key === key);
+  if (!row) return fallback;
+  const v = row.value;
+  if (v === 'true') return true;
+  if (v === 'false') return false;
+  if (v !== '' && !isNaN(Number(v))) return Number(v);
+  return v;
+}
+
+/* ── transaction outbox ─────────────────────────────────────────────────── */
+
+const OUTBOX_KIND = 'transaction_bundle';
+const PROVISIONAL_REFERENCE_RE = /^LOCAL-/i;
+const REFERENCE_TIMEOUT_MS = 8000;
+
+export function localTransactionReference() {
+  return `LOCAL-${uid()}`;
+}
+
+function withTimeout(promise, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out`)), REFERENCE_TIMEOUT_MS);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+async function officialTransactionReference() {
+  const reference = await withTimeout(rpc('next_transaction_reference'), 'Transaction reference request');
+  const value = typeof reference === 'string' ? reference.trim() : '';
+  if (!value || PROVISIONAL_REFERENCE_RE.test(value)) {
+    throw new Error('Database did not return an official transaction reference');
+  }
+  return value;
+}
+
+/**
+ * Requests the next official voucher number. A local, collision-safe reference
+ * is returned only for a genuine transport failure or while no live session is
+ * available; validation and permission errors are surfaced unchanged.
+ */
+export async function requestTransactionReference() {
+  if (!navigator.onLine) return { reference: localTransactionReference(), provisional: true };
+  if (window.__session?.offline) {
+    const live = await ensureOnlineSession();
+    if (!live) return { reference: localTransactionReference(), provisional: true };
+  }
+  try {
+    return { reference: await officialTransactionReference(), provisional: false };
+  } catch (e) {
+    if (isNetworkFailure(e)) return { reference: localTransactionReference(), provisional: true };
+    throw e;
+  }
+}
+
+export function outbox() {
+  try {
+    const a = JSON.parse(localStorage.getItem(OUTBOX_PREFIX + currentUserId()) || '[]');
+    return Array.isArray(a) ? a : [];
+  } catch (_) { return []; }
+}
+
+function outboxWrite(a) {
+  localStorage.setItem(OUTBOX_PREFIX + currentUserId(), JSON.stringify(a));
+  window.dispatchEvent(new CustomEvent('orshap-outbox-changed', { detail: { count: a.filter(x => x.status !== 'SYNCED').length } }));
+}
+
+function outboxEnqueue(payload) {
+  const list = outbox();
+  if (!list.some(x => x.operation_id === payload.operation_id)) {
+    list.push({ ...payload, status: 'PENDING', attempts: 0, created_at: new Date().toISOString(), last_error: null });
+  }
+  outboxWrite(list);
+}
+
+function queuedTransactionEligible(tx) {
+  return !!tx
+    && offlineTransactionTypeAllowed(tx.transaction_type)
+    && offlineWarehouseAllowed(tx.warehouse_id)
+    && tx.created_by === window.__session?.id;
+}
+
+function applyOutboxOverlay() {
+  const list = outbox().filter(x => x.status !== 'SYNCED');
+  for (const op of list) {
+    if (op.kind !== OUTBOX_KIND) continue;
+    const tx = op.payload?.transaction;
+    const lines = op.payload?.lines;
+    if (!queuedTransactionEligible(tx) || !Array.isArray(lines)) continue;
+    if (!store.get('transactions').some(x => x.id === tx.id)) {
+      store.get('transactions').push({
+        ...tx,
+        status: 'PENDING_SYNC',
+        _outbox: true,
+        total_qty: lines.reduce((n, l) => n + Number(l.quantity || 0), 0)
+      });
+    }
+    for (const l of lines) {
+      if (!store.get('transaction_lines').some(x => x.id === l.id)) {
+        store.get('transaction_lines').push({ ...l, transaction_id: tx.id, _outbox: true });
+      }
+    }
+  }
+  enrichAll();
+}
+
+function repairOutboxIds(op) {
+  const tx = op?.payload?.transaction;
+  const lines = op?.payload?.lines;
+  if (!tx || !Array.isArray(lines) || !lines.length) {
+    throw new Error('Offline transaction payload is incomplete');
+  }
+  const previousId = tx.id;
+  if (!isUuid(tx.id)) tx.id = uid();
+  for (const line of lines) {
+    if (!isUuid(line.id)) line.id = uid();
+    if (!line.entered_unit) {
+      // Old queued payloads were created before unit snapshots. They are base
+      // quantities by construction, so never reinterpret them with a factor.
+      const item = store.byId('items', line.item_id);
+      line.base_unit = line.base_unit || item?.base_unit || 'PCS';
+      line.entered_unit = line.base_unit;
+      line.entered_quantity = Number(line.quantity);
+      line.conversion_factor = 1;
+    }
+    const baseUnit = normalizeUnitCode(line.base_unit || store.byId('items', line.item_id)?.base_unit || 'PCS');
+    const enteredUnit = normalizeUnitCode(line.entered_unit || baseUnit);
+    let factor = Number(line.conversion_factor);
+    if (!Number.isFinite(factor) || factor <= 0) {
+      factor = enteredUnit === baseUnit ? 1 : itemUnitFactor(line.item_id, enteredUnit);
+    }
+    line.base_unit = baseUnit;
+    line.entered_unit = enteredUnit;
+    line.conversion_factor = factor;
+    line.entered_quantity = Number(line.entered_quantity);
+    line.quantity = Number(line.quantity);
+  }
+  op.operation_id = tx.id;
+  if (!String(tx.reference_no || '').trim()) tx.reference_no = localTransactionReference();
+  if (String(tx.transaction_type || '').toUpperCase() === 'ISSUE'
+    && !String(tx.usage_party || '').trim()) {
+    throw new Error('Offline issues require a usage party');
+  }
+  if (!isUuid(tx.warehouse_id) || !isUuid(tx.created_by)
+    || lines.some(line => !isUuid(line.item_id) || !isUuid(line.shelf_id)
+      || !Number.isFinite(Number(line.quantity)) || Number(line.quantity) <= 0
+      || !line.entered_unit
+      || !Number.isFinite(line.entered_quantity) || line.entered_quantity <= 0
+      || !Number.isFinite(line.conversion_factor) || line.conversion_factor <= 0
+      || !line.base_unit
+      || Math.abs(line.quantity - (line.entered_quantity * line.conversion_factor)) > 1e-9)) {
+    throw new Error('Offline transaction contains an invalid warehouse, user, item, shelf, quantity or unit');
+  }
+  if (previousId !== tx.id) {
+    store.data.transactions = store.get('transactions').filter(x => !(x._outbox && x.id === previousId));
+    store.data.transaction_lines = store.get('transaction_lines').filter(x => !(x._outbox && x.transaction_id === previousId));
+  }
+}
+
+export async function flushOutbox() {
+  if (!navigator.onLine || !window.__session?.id) return 0;
+  if (!(await ensureOnlineSession())) return 0;
+  const list = outbox();
+  let changed = false, done = 0;
+  for (const op of list) {
+    if (['SYNCED', 'CONFLICT', 'ERROR'].includes(op.status)) continue;
+    if (op.kind !== OUTBOX_KIND) continue;
+    try {
+      const tx = op.payload?.transaction;
+      if (!tx || !offlineTransactionTypeAllowed(tx.transaction_type)) {
+        throw new Error('Offline sync only supports GRN and ISSUE transactions; other vouchers require a live connection.');
+      }
+      if (!offlineWarehouseAllowed(tx.warehouse_id) || tx.created_by !== window.__session.id) {
+        throw new Error('Offline transaction requires exactly one explicitly assigned warehouse and must remain within the current effective scope.');
+      }
+      repairOutboxIds(op);
+      if (PROVISIONAL_REFERENCE_RE.test(String(tx.reference_no || ''))) {
+        tx.reference_no = await officialTransactionReference();
+        op.payload.transaction = tx;
+        changed = true;
+        outboxWrite(list);
+      }
+      await rpc('create_transaction_with_lines_v2', {
+        p_transaction_id: tx.id,
+        p_transaction: tx,
+        p_lines: op.payload.lines
+      });
+      op.status = 'SYNCED';
+      op.last_error = null;
+      op.synced_at = new Date().toISOString();
+      changed = true;
+      done++;
+    } catch (e) {
+      const message = String(e?.message || e);
+      op.attempts = (op.attempts || 0) + 1;
+      op.last_error = message;
+      op.status = isNetworkFailure(e) ? 'PENDING'
+        : (/idempotency conflict|does not match|UNIT_FACTOR_CHANGED|UNIT_NOT_CONFIGURED|BASE_UNIT_|UNIT_QUANTITY_MISMATCH|INVALID_CONVERSION_FACTOR/i.test(message) ? 'CONFLICT' : 'ERROR');
+      changed = true;
+      if (op.status === 'PENDING') break;
+    }
+  }
+  if (changed) outboxWrite(list.filter(x => x.status !== 'SYNCED'));
+  if (done) await pullAll({ silent: true }).catch(() => {});
+  return done;
+}
+
+export function queueSnapshot() {
+  const out = [];
+  for (const x of masterQueue()) {
+    // Hide ops already reflected & synced lazily; only pending/error shown.
+    out.push({
+      id: x.operation_id, source: 'master', table: x.table, operation: x.kind,
+      status: x.status || 'PENDING', attempts: x.attempts || 0,
+      error: x.last_error || '', time: x.created_at || '', record: x.id
+    });
+  }
+  for (const x of outbox()) {
+    if (x.status === 'SYNCED') continue;
+    out.push({
+      id: x.operation_id, source: 'transaction', table: 'transactions + lines',
+      operation: x.kind || 'transaction_bundle', status: x.status || 'PENDING',
+      attempts: x.attempts || 0, error: x.last_error || '', time: x.created_at || '',
+      record: x.payload?.transaction?.reference_no || x.payload?.transaction?.id || ''
+    });
+  }
+  return out;
+}
+
+let syncInFlight = null;
+
+export async function syncAll() {
+  if (!navigator.onLine) throw new Error(isAr() ? 'لا يوجد اتصال بالإنترنت' : 'No internet connection');
+  if (syncInFlight) return syncInFlight;
+
+  syncInFlight = (async () => {
+    // A local (offline) session may still have a persisted Supabase auth token.
+    // Promote it before touching the queue so a reconnect can resume without
+    // forcing the user to type the password again.
+    const liveSession = await ensureOnlineSession();
+    if (!liveSession?.id) throw new Error(signInOnlineMessage());
+
+    const master = await flushMasterQueue();
+    const transactions = await flushOutbox();
+
+    let refreshError = null;
+    try {
+      await pullAll({ silent: true });
+    } catch (e) {
+      refreshError = e;
+      console.warn('[store] sync refresh failed', e);
+    }
+
+    const q = queueSnapshot();
+    const pending = q.filter(x => x.status === 'PENDING' || !x.status).length;
+    const errors = q.filter(x => x.status === 'ERROR').length;
+    const conflicts = q.filter(x => x.status === 'CONFLICT').length;
+
+    // Nothing was written and the server could not be read: report the real
+    // failure instead of pretending the app is synchronised.
+    if (!master && !transactions && !q.length && refreshError) throw refreshError;
+
+    return {
+      master, transactions, remaining: q.length, pending, errors, conflicts,
+      refreshError: refreshError ? String(refreshError?.message || refreshError) : null
+    };
+  })();
+
+  try {
+    return await syncInFlight;
+  } finally {
+    syncInFlight = null;
+  }
+}
+
+/* ── transactions ───────────────────────────────────────────────────────── */
+
+// Stock movements created here are ordinary vouchers only. Opening balances and
+// returns are deliberately excluded: they have dedicated atomic RPCs below.
+const VOUCHER_TYPES = new Set(['GRN', 'ISSUE', 'ADJUSTMENT_IN', 'ADJUSTMENT_OUT']);
+const RETURN_TYPES = new Set(['RETURN_FROM_USAGE', 'RETURN_FROM_CUSTOMER', 'RETURN_TO_SUPPLIER']);
+
+export function shouldAutoApprove() {
+  if (AUTO_APPROVE_ROLES.includes(roleOf())) return true;
+  const require = setting('REQUIRE_APPROVAL', true);
+  return require === false || require === 'false' || require === '0';
+}
+
+export async function createTransactionBundle({
+  type, warehouse_id, zone_id, section_id, storage_area_id = null,
+  supplier = null, receiver_name = null, usage_party = null,
+  adjustment_reason = null, external_reference = null, notes = null,
+  reference_no = null, lines = []
+}) {
+  const normalizedType = String(type || '').toUpperCase();
+  if (!VOUCHER_TYPES.has(normalizedType)) {
+    throw new Error(isAr()
+      ? 'نوع السند غير مدعوم في هذا النموذج. استخدم مسار المرتجعات أو الأرصدة الافتتاحية المخصص.'
+      : 'Unsupported voucher type in this form. Use the dedicated returns or opening-balance workspace.');
+  }
+  if (!window.__session?.id) {
+    throw new Error(isAr() ? 'سجّل الدخول أولًا.' : 'Sign in before creating a voucher.');
+  }
+  if (!lines.length) throw new Error(isAr() ? 'أضف سطرًا واحدًا على الأقل' : 'Add at least one line');
+  if (normalizedType === 'ISSUE' && !String(usage_party || '').trim()) {
+    throw new Error(isAr() ? 'جهة الاستخدام مطلوبة لأسناد الصرف.' : 'Usage party is required for issues.');
+  }
+
+  const prepared = lines.map(l => {
+    const shelf = store.byId('shelves', l.shelf_id);
+    const item = store.byId('items', l.item_id);
+    const baseUnit = normalizeUnitCode(l.base_unit || item?.base_unit || 'PCS');
+    const enteredUnit = normalizeUnitCode(l.entered_unit || l.unit || baseUnit);
+    const enteredQty = Number(l.entered_quantity ?? l.quantity);
+    let factor = Number(l.conversion_factor);
+    if (!Number.isFinite(factor) || factor <= 0) {
+      factor = enteredUnit === baseUnit ? 1 : itemUnitFactor(l.item_id, enteredUnit);
+    }
+    const baseQty = Number(l.quantity);
+    return {
+      id: l.id || uid(),
+      item_id: l.item_id,
+      shelf_id: l.shelf_id,
+      storage_area_id: l.storage_area_id || shelf?.storage_area_id || null,
+      quantity: baseQty,
+      entered_quantity: enteredQty,
+      entered_unit: enteredUnit,
+      conversion_factor: factor,
+      base_unit: baseUnit,
+      batch_no: l.batch_no || null,
+      expiry_date: l.expiry_date || null,
+      notes: l.notes || null
+    };
+  });
+
+  const invalid = !isUuid(warehouse_id)
+    || !isUuid(window.__session.id)
+    || prepared.some(l => !isUuid(l.item_id) || !isUuid(l.shelf_id)
+      || !Number.isFinite(l.quantity) || l.quantity <= 0
+      || !l.entered_unit
+      || !Number.isFinite(l.entered_quantity) || l.entered_quantity <= 0
+      || !Number.isFinite(l.conversion_factor) || l.conversion_factor <= 0
+      || !l.base_unit
+      || Math.abs(l.quantity - (l.entered_quantity * l.conversion_factor)) > 1e-9);
+  if (invalid) {
+    throw new Error(isAr()
+      ? 'يوجد معرّف أو كمية أو وحدة غير صالحة في السند. أعد اختيار الصنف والوحدة ثم حاول مجددًا.'
+      : 'The voucher contains an invalid ID, quantity or unit. Re-select the item and unit, then try again.');
+  }
+
+  // A locally verified session can be promoted with the persisted Supabase
+  // token. When that is impossible the request stays local and queued.
+  let online = navigator.onLine;
+  if (online && window.__session.offline) online = !!(await ensureOnlineSession());
+
+  let reference = String(reference_no || '').trim();
+  if (!reference) {
+    const requested = await requestTransactionReference();
+    reference = requested.reference;
+  }
+  const provisionalReference = PROVISIONAL_REFERENCE_RE.test(reference);
+
+  const tx = {
+    id: uid(), reference_no: reference, transaction_type: normalizedType,
+    status: 'PENDING_APPROVAL', warehouse_id, zone_id: zone_id || null,
+    section_id: section_id || null,
+    storage_area_id: storage_area_id || prepared[0].storage_area_id || null,
+    supplier: supplier || null, receiver_name: receiver_name || null,
+    usage_party: String(usage_party || '').trim() || null,
+    adjustment_reason: adjustment_reason || null,
+    external_reference: external_reference || null, notes: notes || null,
+    created_by: window.__session.id, created_at: new Date().toISOString()
+  };
+
+  const assertOfflineEligible = () => {
+    if (!offlineTransactionTypeAllowed(normalizedType)) {
+      throw new Error(isAr()
+        ? 'دون اتصال: يُسمح بالتوريد والصرف فقط. تحتاج التسويات والمرتجعات إلى اتصال مباشر.'
+        : 'Offline mode supports receipts and issues only. Adjustments and returns require a live connection.');
+    }
+    if (!offlineWarehouseAllowed(warehouse_id)) {
+      throw new Error(isAr()
+        ? 'دون اتصال: يلزم مستودع واحد معيّن صراحةً لحسابك.'
+        : 'Offline mode requires exactly one explicitly assigned warehouse.');
+    }
+  };
+
+  const queueLocally = () => {
+    assertOfflineEligible();
+    outboxEnqueue({ operation_id: tx.id, kind: OUTBOX_KIND, payload: { transaction: tx, lines: prepared } });
+    applyOutboxOverlay();
+    persist(true);
+    store.emit();
+    if (navigator.onLine) void flushOutbox().catch(e => console.warn('[store] queued voucher sync deferred', e));
+    return { transaction: tx, queued: true, offline: !navigator.onLine };
+  };
+
+  if (!online || provisionalReference) return queueLocally();
+
+  try {
+    await rpc('create_transaction_with_lines_v2', {
+      p_transaction_id: tx.id, p_transaction: tx, p_lines: prepared
+    });
+  } catch (e) {
+    // The RPC is idempotent on the exact transaction id and payload. Replaying
+    // the official-reference payload from the outbox is therefore safe.
+    if (isNetworkFailure(e)) return queueLocally();
+    throw e;
+  }
+
+  let approved = false;
+  if (shouldAutoApprove()) {
+    try { await rpc('approve_transaction', { p_transaction_id: tx.id }); approved = true; }
+    catch (e) { console.warn('[store] auto-approval failed', e); }
+  }
+  await pullAll({ silent: true }).catch(() => {});
+  return { transaction: tx, approved, queued: false, offline: false };
+}
+
+export async function approveTransaction(id) {
+  requireLiveConnection('اعتماد السند يتطلب اتصالاً مباشراً بقاعدة البيانات.', 'Voucher approval requires a live database connection.');
+  try {
+    await rpc('approve_transaction', { p_transaction_id: id });
+  } catch (e) {
+    if (isNetworkFailure(e)) throw new Error(isAr()
+      ? 'تعذر الوصول إلى الخادم. تحقق من الاتصال ثم أعد المحاولة.'
+      : 'Could not reach the server. Check the connection and try again.');
+    throw e;
+  }
+  await pullAll({ silent: true }).catch(() => {});
+}
+
+export async function rejectTransaction(id, reason) {
+  requireLiveConnection('رفض السند يتطلب اتصالاً مباشراً بقاعدة البيانات.', 'Voucher rejection requires a live database connection.');
+  const note = String(reason || '').trim();
+  if (!note) throw new Error(isAr() ? 'سبب الرفض مطلوب.' : 'A rejection reason is required.');
+  try {
+    // The database RPC enforces permission, pending state, warehouse access and
+    // writes the audit log. Never update the transactions table directly here.
+    await rpc('reject_transaction', { p_transaction_id: id, p_reason: note });
+  } catch (e) {
+    if (isNetworkFailure(e)) throw new Error(isAr()
+      ? 'تعذر الوصول إلى الخادم. تحقق من الاتصال ثم أعد المحاولة.'
+      : 'Could not reach the server. Check the connection and try again.');
+    throw e;
+  }
+  await pullAll({ silent: true }).catch(() => {});
+}
+
+export async function createStockReturnRequest({
+  returnId, returnType, referenceNo, itemId,
+  quantity, batchNo, expiryDate, shelfId, supplier, externalReference, notes
+}) {
+  requireLiveConnection('إنشاء المرتجعات يتطلب اتصالاً مباشراً بقاعدة البيانات. أعد الاتصال ثم حاول مجددًا.',
+    'Returns require a live database connection. Reconnect and try again.');
+  const type = String(returnType || '').toUpperCase();
+  if (!RETURN_TYPES.has(type)) {
+    throw new Error(isAr() ? 'نوع المرتجع غير مدعوم.' : 'Unsupported return type.');
+  }
+  const qty = Number(quantity);
+  const invalid = !isUuid(itemId) || !isUuid(shelfId)
+    || !Number.isFinite(qty) || qty <= 0;
+  if (invalid) {
+    throw new Error(isAr()
+      ? 'تحقق من الصنف والرف والكمية قبل إنشاء المرتجع.'
+      : 'Check the item, shelf and quantity before creating the return.');
+  }
+  if (type === 'RETURN_TO_SUPPLIER' && !String(supplier || '').trim()) {
+    throw new Error(isAr() ? 'اسم المورد مطلوب للمرتجع إلى المورد.' : 'Supplier is required for a supplier return.');
+  }
+  if (type !== 'RETURN_TO_SUPPLIER' && !String(externalReference || '').trim()) {
+    throw new Error(isAr() ? 'مرجع مستند المرتجع مطلوب.' : 'The return document reference is required.');
+  }
+  let reference = String(referenceNo || '').trim();
+  if (!reference || PROVISIONAL_REFERENCE_RE.test(reference)) reference = await officialTransactionReference();
+  try {
+    const res = await rpc('create_stock_return_request', {
+      p_return_id: returnId || uid(),
+      p_return_type: type,
+      p_reference_no: reference,
+      p_item_id: itemId,
+      p_quantity: qty,
+      p_batch_no: batchNo || null,
+      p_expiry_date: expiryDate || null,
+      p_shelf_id: shelfId,
+      p_supplier: supplier || null,
+      p_external_reference: externalReference || null,
+      p_notes: notes || null
+    });
+    await pullAll({ silent: true }).catch(() => {});
+    return res;
+  } catch (e) {
+    if (isNetworkFailure(e)) throw new Error(isAr()
+      ? 'تعذر الوصول إلى الخادم. لم يتم تأكيد إنشاء المرتجع؛ تحقق من الاتصال وسجل المرتجعات قبل إعادة المحاولة.'
+      : 'Could not reach the server. The return was not confirmed; check the connection and the voucher list before retrying.');
+    throw e;
+  }
+}
+
+/* ── transfers ──────────────────────────────────────────────────────────── */
+
+export async function dispatchTransfer({ orderId, referenceNo, sourceWarehouseId, destinationWarehouseId, lines, notes }) {
+  const res = await rpc('dispatch_stock_transfer_order_v3', {
+    p_order_id: orderId || uid(),
+    p_reference_no: referenceNo || ('TRF-' + Date.now()),
+    p_source_warehouse_id: sourceWarehouseId,
+    p_destination_warehouse_id: destinationWarehouseId,
+    p_lines: lines,
+    p_notes: notes || null
+  });
+  await pullAll({ silent: true }).catch(() => {});
+  return res;
+}
+
+export async function receiveTransfer({ transferId, qty, shelfId, returnRemaining = false, reason = null, operationId = null }) {
+  const res = await rpc('receive_stock_transfer_quantity_at_shelf_v2', {
+    p_transfer_id: transferId,
+    p_received_quantity: Number(qty),
+    p_destination_shelf_id: shelfId || null,
+    p_return_remaining: !!returnRemaining,
+    p_reason: reason || null,
+    p_operation_id: operationId || uid()
+  });
+  await pullAll({ silent: true }).catch(() => {});
+  return res;
+}
+
+export async function rejectTransferReceipt(id, reason) {
+  const res = await rpc('reject_stock_transfer_receipt', { p_transfer_id: id, p_reason: reason });
+  await pullAll({ silent: true }).catch(() => {});
+  return res;
+}
+
+export async function reviewTransferReturn(id, decision, note) {
+  const res = await rpc('review_stock_transfer_return_request', {
+    p_transfer_id: id, p_decision: decision, p_note: note || null
+  });
+  await pullAll({ silent: true }).catch(() => {});
+  return res;
+}
+
+export async function confirmTransferReturn(id) {
+  const res = await rpc('confirm_stock_transfer_return_v2', { p_transfer_id: id });
+  await pullAll({ silent: true }).catch(() => {});
+  return res;
+}
+
+/* ── stocktake ──────────────────────────────────────────────────────────── */
+
+export async function createStocktakeSession({ warehouseId, storageAreaId, type = 'CYCLE', mode = 'VISIBLE', notes }) {
+  const res = await rpc('create_stocktake_session_with_lines', {
+    p_warehouse_id: warehouseId,
+    p_storage_area_id: storageAreaId || null,
+    p_stocktake_type: type,
+    p_count_mode: mode,
+    p_notes: notes || null
+  });
+  await pullAll({ silent: true }).catch(() => {});
+  return res;
+}
+
+export async function saveStocktakeCount(lineId, qty, enteredUnit = null) {
+  const line = byId('stocktake_lines', lineId);
+  const baseUnit = normalizeUnitCode(line?.base_unit || store.byId('items', line?.item_id)?.base_unit || 'PCS');
+  const unitCode = normalizeUnitCode(enteredUnit || baseUnit);
+  let baseQty = Number(qty);
+  let factor = 1;
+  let res;
+
+  if (enteredUnit && unitCode !== baseUnit) {
+    const units = unitOptions(line?.item_id);
+    const unit = units.find(u => u.value === unitCode);
+    if (!unit) {
+      throw new Error(isAr()
+        ? 'الوحدة المختارة غير مهيأة لهذا الصنف. اعتمد معامل التحويل من الإعدادات أولاً.'
+        : 'The selected unit is not configured for this item. Approve its conversion factor in Settings first.');
+    }
+    factor = Number(unit.factor);
+    baseQty = Number(qty) * factor;
+    res = await rpc('save_stocktake_count_v2', {
+      p_line_id: lineId,
+      p_entered_quantity: Number(qty),
+      p_entered_unit: unitCode
+    });
+    baseQty = Number(res?.counted_qty ?? baseQty);
+  } else {
+    res = await rpc('save_stocktake_count', { p_line_id: lineId, p_counted_qty: Number(qty) });
+  }
+
+  if (line) {
+    line.counted_qty = baseQty;
+    line.entered_quantity = Number(qty);
+    line.entered_unit = unitCode;
+    line.conversion_factor = factor;
+    line.base_unit = baseUnit;
+    line.variance = baseQty - Number(line.system_qty || 0);
+    persist();
+    store.emit();
+  }
+  return { ...(res || {}), counted_qty: baseQty, entered_quantity: Number(qty), entered_unit: unitCode, conversion_factor: factor, base_unit: baseUnit };
+}
+
+export async function submitStocktake(sessionId) {
+  const res = await rpc('submit_stocktake_for_review', { p_session_id: sessionId });
+  await pullAll({ silent: true }).catch(() => {});
+  return res;
+}
+
+export async function reviewStocktake(sessionId, approve, comment) {
+  const res = await rpc('review_stocktake_session', {
+    p_session_id: sessionId, p_approve: !!approve, p_comment: comment || null
+  });
+  await pullAll({ silent: true }).catch(() => {});
+  return res;
+}
+
+export async function settleStocktake(sessionId, lineIds, direction, comments = {}) {
+  const res = await rpc('process_stocktake_settlement_with_direction', {
+    p_session_id: sessionId, p_line_ids: lineIds,
+    p_direction: direction, p_line_comments: comments || {}
+  });
+  await pullAll({ silent: true }).catch(() => {});
+  return res;
+}
+
+export async function closeStocktake(sessionId) {
+  const res = await rpc('close_stocktake_session_direct', { p_session_id: sessionId });
+  await pullAll({ silent: true }).catch(() => {});
+  return res;
+}
+
+/* ── lookups / formatting ───────────────────────────────────────────────── */
+
+export function named(row) {
+  if (!row) return '—';
+  return isAr()
+    ? (row.name_ar || row.name_en || row.name || row.code || '—')
+    : (row.name_en || row.name_ar || row.name || row.code || '—');
+}
+
+export function itemLabel(itemOrId) {
+  const it = typeof itemOrId === 'string' ? byId('items', itemOrId) : itemOrId;
+  if (!it) return '—';
+  return named(it) + (it.code ? ` (${it.code})` : '');
+}
+
+export function itemNameOnly(itemOrId) {
+  const it = typeof itemOrId === 'string' ? byId('items', itemOrId) : itemOrId;
+  return it ? named(it) : '—';
+}
+
+export function warehouseName(id) { return byId('warehouses', id)?.name || '—'; }
+export function zoneName(id) { return byId('zones', id)?.name || '—'; }
+export function areaName(id) { return byId('storage_areas', id)?.name || '—'; }
+export function sectionName(id) { return byId('sections', id)?.name || '—'; }
+export function shelfName(id) { const s = byId('shelves', id); return s ? s.code : '—'; }
+export function shelfPath(id) {
+  const s = byId('shelves', id);
+  if (!s) return '—';
+  return s.full_path || [warehouseName(s.warehouse_id), zoneName(s.zone_id),
+    s.section_id ? sectionName(s.section_id) : '', s.code].filter(Boolean).join(' / ');
+}
+export function profileName(id) {
+  const p = byId('profiles', id);
+  return p?.name || p?.email || '—';
+}
+
+export function warehouseOptions() {
+  return store.get('warehouses').map(w => ({ value: w.id, label: `${w.code} — ${w.name}` }));
+}
+export function areaOptions(warehouseId) {
+  return store.get('storage_areas')
+    .filter(a => !warehouseId || a.warehouse_id === warehouseId)
+    .map(a => ({ value: a.id, label: `${a.code} — ${a.name}` }));
+}
+export function zoneOptions(warehouseId) {
+  return store.get('zones').filter(z => !warehouseId || z.warehouse_id === warehouseId)
+    .map(z => ({ value: z.id, label: `${z.code} — ${z.name}` }));
+}
+export function sectionOptions(warehouseId, zoneId) {
+  return store.get('sections')
+    .filter(s => (!warehouseId || s.warehouse_id === warehouseId) && (!zoneId || s.zone_id === zoneId))
+    .map(s => ({ value: s.id, label: `${s.code} — ${s.name}` }));
+}
+/**
+ * Shelves that currently hold stock for an item (or in general). Used for
+ * "smart" dropdowns: if the item lives in exactly one shelf, it can be auto-selected;
+ * otherwise only the item's shelves are offered (scoped by warehouse when provided).
+ */
+export function shelvesForItem(itemId, { warehouseId, onlyWithStock = true } = {}) {
+  if (!itemId) return [];
+  const ids = new Set();
+  for (const s of store.get('stock')) {
+    if (s.item_id !== itemId) continue;
+    const qty = Number(s.quantity || 0);
+    if (onlyWithStock && qty <= 0) continue;
+    const sh = byId('shelves', s.shelf_id);
+    if (!sh) continue;
+    if (warehouseId && sh.warehouse_id !== warehouseId) continue;
+    ids.add(s.shelf_id);
+  }
+  return store.get('shelves')
+    .filter(sh => ids.has(sh.id))
+    .filter(sh => (!warehouseId || sh.warehouse_id === warehouseId))
+    .sort((a, b) => String(shelfPath(a.id)).localeCompare(String(shelfPath(b.id))))
+    .map(sh => ({ value: sh.id, label: shelfPath(sh.id), shelf: sh }));
+}
+
+export function shelfOptions({ warehouseId, zoneId, sectionId, storageAreaId, itemId, onlyWithStockForItem = true } = {}) {
+  if (itemId) {
+    const list = shelvesForItem(itemId, { warehouseId, onlyWithStock: onlyWithStockForItem });
+    if (list.length) return list.map(({ value, label }) => ({ value, label }));
+  }
+  return store.get('shelves')
+    .filter(s => (!warehouseId || s.warehouse_id === warehouseId)
+      && (!zoneId || s.zone_id === zoneId)
+      && (!sectionId || s.section_id === sectionId)
+      && (!storageAreaId || s.storage_area_id === storageAreaId))
+    .map(s => ({ value: s.id, label: shelfPath(s.id) }));
+}
+export function itemOptions({ activeOnly = true } = {}) {
+  return store.get('items')
+    .filter(i => !activeOnly || i.status === 'ACTIVE')
+    .map(i => ({ value: i.id, label: itemLabel(i) }));
+}
+function normalizeUnitCode(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
+export function itemUnitFactor(itemId, unitCode) {
+  const it = byId('items', itemId);
+  if (!it) return null;
+  const base = normalizeUnitCode(it.base_unit || 'PCS');
+  const requested = normalizeUnitCode(unitCode || base);
+  if (!requested || requested === base) return 1;
+  const conversion = store.get('item_unit_conversions')
+    .find(c => c.item_id === itemId && normalizeUnitCode(c.unit_code) === requested);
+  if (!conversion) return null;
+  const factor = Number(conversion.factor_to_base);
+  return Number.isFinite(factor) && factor > 0 ? factor : null;
+}
+
+/**
+ * Unit options are deliberately strict: the base unit plus rows from
+ * item_unit_conversions only. items.purchase_unit and items.conversion_factor
+ * are legacy identity/columns and never provide a fallback factor.
+ */
+export function unitOptions(itemId) {
+  const it = byId('items', itemId);
+  if (!it) return [];
+  const base = normalizeUnitCode(it.base_unit || 'PCS');
+  const out = [{ value: base, label: `${base} (1)`, factor: 1, isBase: true }];
+  for (const c of store.get('item_unit_conversions')) {
+    if (c.item_id !== itemId) continue;
+    const code = normalizeUnitCode(c.unit_code);
+    if (!code || code === base || out.some(u => u.value === code)) continue;
+    const factor = Number(c.factor_to_base);
+    if (!Number.isFinite(factor) || factor <= 0) continue;
+    out.push({ value: code, label: `${code} (${factor})`, factor, isBase: false });
+  }
+  return out;
+}
+
+/**
+ * Returns a reason code when an item's base unit must not be edited.
+ * Movement history wins over conversion rows so the UI can explain the lock.
+ * The database trigger remains the authoritative guard.
+ */
+export function itemBaseUnitLockReason(itemId) {
+  const it = byId('items', itemId);
+  if (!it) return '';
+  if (store.get('stock').some(s => s.item_id === itemId)) return 'STOCK';
+  if (store.get('inventory_ledger').some(l => l.item_id === itemId)) return 'LEDGER';
+  if (store.get('stock_transfers').some(t => t.item_id === itemId)) return 'TRANSFER';
+  if (store.get('stocktake_lines').some(l => l.item_id === itemId && l.is_settled === true)) return 'STOCKTAKE';
+  if (store.get('item_unit_conversions').some(c => c.item_id === itemId)) return 'CONVERSIONS';
+  return '';
+}
+
+export function stockQty(itemId, shelfId = null) {
+  return store.get('stock')
+    .filter(s => s.item_id === itemId && (!shelfId || s.shelf_id === shelfId))
+    .reduce((n, s) => n + Number(s.quantity || 0), 0);
+}
+export function stockByItem() {
+  const m = new Map();
+  for (const s of store.get('stock')) {
+    m.set(s.item_id, (m.get(s.item_id) || 0) + Number(s.quantity || 0));
+  }
+  return m;
+}
+export function stockAtShelf() {
+  const m = new Map();
+  for (const s of store.get('stock')) {
+    const k = `${s.item_id}|${s.shelf_id}`;
+    m.set(k, (m.get(k) || 0) + Number(s.quantity || 0));
+  }
+  return m;
+}
+
+export function warehousesAllowed() {
+  return store.get('warehouses');
+}

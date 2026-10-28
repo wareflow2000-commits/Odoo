@@ -1,0 +1,21 @@
+{
+  "name": "OW — إدارة المستودعات",
+  "short_name": "OW",
+  "description": "Bilingual warehouse management system: inventory, transactions, transfers, stocktake and reports — online and offline.",
+  "lang": "ar",
+  "dir": "rtl",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f2eff2",
+  "theme_color": "#714B67",
+  "icons": [
+    {
+      "src": "assets/logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

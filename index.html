@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#714B67">
+<meta name="description" content="OW — نظام إدارة المستودعات · Warehouse Management System">
+<title>OW — إدارة المستودعات</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="assets/logo.png">
+<link rel="apple-touch-icon" href="assets/logo.png">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+<link rel="stylesheet" href="style-base.css">
+<link rel="stylesheet" href="style-shell.css">
+<link rel="stylesheet" href="style-wms.css">
+</head>
+<body>
+
+<!-- ── Login ───────────────────────────────────────────────────────────── -->
+<div id="loginPage" class="login-wrapper">
+  <button class="login-lang" id="loginLangBtn" onclick="window.__loginLang && window.__loginLang()" title="اللغة">
+    <i class="fa-solid fa-language"></i> <span id="loginLangLabel">الإنجليزية</span>
+  </button>
+  <div class="login-card">
+    <div class="login-logo">
+      <img src="assets/logo.png" alt="OW">
+      <p id="loginSubtitle">نظام إدارة المستودعات</p>
+    </div>
+    <div class="login-heading">
+      <h2 id="loginTitle">مرحباً بعودتك</h2>
+      <p id="loginDescription">سجّل الدخول لمتابعة المخزون والمعاملات بأمان.</p>
+    </div>
+    <form class="login-form" id="loginForm" onsubmit="window.__login(event)" novalidate>
+      <div class="field login-signup-only" id="loginNameField" style="display:none">
+        <label for="loginName" id="loginNameLabel">الاسم الكامل</label>
+        <div class="login-field">
+          <i class="fa-regular fa-user login-field-icon" aria-hidden="true"></i>
+          <input id="loginName" name="fullName" type="text" autocomplete="name" placeholder="الاسم الكامل">
+        </div>
+      </div>
+      <div class="field">
+        <label for="loginEmail" id="loginEmailLabel">البريد الإلكتروني</label>
+        <div class="login-field">
+          <i class="fa-regular fa-envelope login-field-icon" aria-hidden="true"></i>
+          <input id="loginEmail" name="email" type="email" required autocomplete="email" inputmode="email" spellcheck="false" placeholder="name@company.com">
+        </div>
+      </div>
+      <div class="field">
+        <label for="loginPassword" id="loginPasswordLabel">كلمة المرور</label>
+        <div class="login-field login-field-password">
+          <i class="fa-solid fa-lock login-field-icon" aria-hidden="true"></i>
+          <input id="loginPassword" name="password" type="password" required autocomplete="current-password" placeholder="••••••••">
+          <button type="button" class="login-password-toggle" id="loginPasswordToggle" onclick="window.__togglePassword && window.__togglePassword()" aria-label="إظهار كلمة المرور" aria-controls="loginPassword" aria-pressed="false" title="إظهار كلمة المرور">
+            <i class="fa-regular fa-eye" aria-hidden="true"></i>
+          </button>
+        </div>
+      </div>
+      <button type="submit" id="loginButton"><i class="fa-solid fa-right-to-bracket"></i> <span>تسجيل الدخول</span></button>
+      <button type="button" class="login-switch" id="loginSwitch" onclick="window.__toggleAuthMode()">ليس لديك حساب؟ إنشاء حساب</button>
+      <div id="authFeedback" class="login-info"></div>
+      <div id="authError" class="login-error"></div>
+      <p class="login-hint" id="loginHint">بعد أول تسجيل دخول ناجح، يمكنك الدخول دون اتصال على هذا الجهاز.</p>
+    </form>
+  </div>
+</div>
+
+<!-- ── Application shell ──────────────────────────────────────────────── -->
+<div id="appShell">
+  <header class="o_navbar" id="navbar"></header>
+  <div class="o_apps_panel" id="appsPanel"></div>
+  <div class="o_user_menu" id="userMenu"></div>
+  <nav class="o_menubar" id="menubar"></nav>
+  <main class="o_main" id="mainContent"></main>
+  <nav class="o_mobile_nav" id="mobileNav" aria-label="التنقل السريع"></nav>
+</div>
+
+<div id="modalRoot"></div>
+<div id="toastRoot" class="o_toast_stack"></div>
+
+<!-- Classic scripts: expose Supabase & optional SQLite before the module graph -->
+<script src="supabase-client.js"></script>
+<script src="SQLite-db.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.13.0/sql-wasm.js" crossorigin="anonymous"></script>
+<script>
+  // Optional durable local mirror (SQLite WASM + OPFS). The app works on
+  // localStorage alone if this fails, so failures are silent.
+  try { if (window.bootOptionalSQLite) bootOptionalSQLite(); } catch (e) { console.warn('SQLite bootstrap skipped', e); }
+</script>
+<script src="jsqr.js"></script>
+<script src="qrcode-generator.js"></script>
+<script src="qr-reader.js"></script>
+<script type="module" src="main.js"></script>
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' })
+        .then(reg => reg.update().catch(() => {}))
+        .catch(() => {});
+    });
+  }
+</script>
+</body>
+</html>
