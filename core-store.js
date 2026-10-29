@@ -322,15 +322,13 @@ export async function pullAll({ silent = false } = {}) {
   } catch (e) {
     store.error = e;
     console.error('[store] pull failed', e);
-    if (!store.loaded) {
-      loadLocal();
-      // A failed remote pull must not hide durable local work. Rebuild each
-      // user's pending overlays after hydrating the last known snapshot.
-      applyMasterOverlay();
-      applyOutboxOverlay();
-      applyStocktakeCountOverlay();
-      applyAccessFilter();
-    }
+    if (!store.loaded) loadLocal();
+    // A failed remote pull must not hide durable local work, even when the
+    // store was already marked loaded before the request failed.
+    applyMasterOverlay();
+    applyOutboxOverlay();
+    applyStocktakeCountOverlay();
+    applyAccessFilter();
     store.offline = !navigator.onLine;
     store.loaded = true;
     throw e;
