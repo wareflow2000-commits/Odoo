@@ -1,4 +1,23 @@
 -- ORSHAP WMS v13.9.58: enforce destination scope and close anonymous RPC execution.
+-- Fail closed if production has drifted since this definition was reviewed.
+DO $preflight$
+DECLARE v_definition text;
+BEGIN
+  SELECT pg_get_functiondef(p.oid) INTO v_definition
+  FROM pg_proc p
+  WHERE p.oid = to_regprocedure('public.dispatch_stock_transfer_order_line(uuid,text,uuid,numeric,text,date,uuid,uuid,text,uuid)');
+  IF v_definition IS NULL THEN
+    RAISE EXCEPTION 'Expected dispatch_stock_transfer_order_line signature is missing; abort migration';
+  END IF;
+  IF position('current_user_can_access_warehouse(p_destination_warehouse_id)' IN v_definition) > 0 THEN
+    RAISE EXCEPTION 'Destination-scope check already exists; review live definition instead of overwriting it';
+  END IF;
+  IF position('current_user_can_access_warehouse(v_src.warehouse_id)' IN v_definition) = 0 THEN
+    RAISE EXCEPTION 'Live function differs from the reviewed source-scope baseline; abort migration';
+  END IF;
+END;
+$preflight$;
+
 -- Generated from the live function definition during read-only audit; review before applying.
 CREATE OR REPLACE FUNCTION public.dispatch_stock_transfer_order_line(p_transfer_id uuid, p_reference_no text, p_item_id uuid, p_quantity numeric, p_batch_no text, p_expiry_date date, p_source_shelf_id uuid, p_destination_shelf_id uuid, p_notes text, p_destination_warehouse_id uuid)
  RETURNS jsonb
