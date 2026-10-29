@@ -577,11 +577,13 @@ function openScanCount(session, scannedLines, { onSaved } = {}) {
           line.base_unit = saved.base_unit;
           line.variance = Number(saved.counted_qty) - Number(line.system_qty || 0);
           close();
-          toast(saved.entered_unit === saved.base_unit
-            ? tx('تم حفظ العد من رمز QR.', 'Count saved from the QR scan.')
-            : tx(`تم حفظ ${fmtNum(saved.entered_quantity)} ${saved.entered_unit} = ${fmtNum(saved.counted_qty)} ${saved.base_unit}.`,
-              `Saved ${fmtNum(saved.entered_quantity)} ${saved.entered_unit} = ${fmtNum(saved.counted_qty)} ${saved.base_unit}.`),
-          'success');
+          toast(saved.pending_sync
+            ? tx('حُفظ العد محلياً وسيُزامن عند عودة الاتصال.', 'Count saved locally and will sync when connection returns.')
+            : (saved.entered_unit === saved.base_unit
+              ? tx('تم حفظ العد من رمز QR.', 'Count saved from the QR scan.')
+              : tx(`تم حفظ ${fmtNum(saved.entered_quantity)} ${saved.entered_unit} = ${fmtNum(saved.counted_qty)} ${saved.base_unit}.`,
+                `Saved ${fmtNum(saved.entered_quantity)} ${saved.entered_unit} = ${fmtNum(saved.counted_qty)} ${saved.base_unit}.`)),
+          saved.pending_sync ? 'warning' : 'success');
           onSaved?.(line.id, Number(saved.counted_qty), line);
         } catch (e) {
           error.innerHTML = alertBox(esc(friendlyError(e)), 'danger');
@@ -670,7 +672,9 @@ function bindCountInputs(root, lines) {
         if (varCell && line) varCell.textContent = fmtNum(line.variance);
         const alt = inp.closest('tr')?.querySelector('.o_count_alt');
         if (alt) alt.textContent = '';
-        toast(tx('تم حفظ العد', 'Count saved'), 'info', { duration: 1200 });
+        toast(saved.pending_sync
+          ? tx('حُفظ العد محلياً وسيُزامن عند عودة الاتصال', 'Count saved locally; it will sync when connection returns')
+          : tx('تم حفظ العد', 'Count saved'), saved.pending_sync ? 'warning' : 'info', { duration: 2200 });
       } catch (e) { toast(String(e.message || e), 'error'); }
       finally { inp.disabled = false; }
     };
