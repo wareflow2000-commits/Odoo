@@ -1216,6 +1216,7 @@ function queueStocktakeCountLocal(lineId, qty, unitCode, baseUnit, factor, baseQ
 
 async function flushStocktakeCountQueue() {
   if (!navigator.onLine || !window.__session?.id || !(await ensureOnlineSession())) return 0;
+  await pullAll({ silent: true });
   const rows = stocktakeCountQueue();
   let done = 0, changed = false;
   for (const row of rows) {
@@ -1225,6 +1226,12 @@ async function flushStocktakeCountQueue() {
         throw new Error('Offline stocktake count belongs to a warehouse outside the current single-warehouse offline scope.');
       }
       if (row.entered_unit && normalizeUnitCode(row.entered_unit) !== normalizeUnitCode(row.base_unit)) {
+        const currentUnit = unitOptions(row.item_id).find(u => u.value === normalizeUnitCode(row.entered_unit));
+        const currentFactor = Number(currentUnit?.factor);
+        const savedFactor = Number(row.conversion_factor);
+        if (!currentUnit || !Number.isFinite(currentFactor) || currentFactor <= 0 || !Number.isFinite(savedFactor) || Math.abs(currentFactor - savedFactor) > 1e-9) {
+          throw new Error('Unit conversion factor changed; review and re-enter this offline count.');
+        }
         await rpc('save_stocktake_count_v2', {
           p_line_id: row.line_id, p_entered_quantity: row.entered_quantity, p_entered_unit: row.entered_unit
         });
