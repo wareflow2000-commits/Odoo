@@ -1227,9 +1227,6 @@ async function flushStocktakeCountQueue() {
   let freshConversions = null;
   if (alternateRows.length) {
     const itemIds = [...new Set(alternateRows.map(row => row.item_id).filter(Boolean))];
-    if (itemIds.length !== new Set(alternateRows.map(row => row.item_id)).size) {
-      throw new Error('Cannot verify all queued stocktake unit conversions; counts remain pending.');
-    }
     const client = await sb();
     const result = await client.from('item_unit_conversions')
       .select('item_id,unit_code,factor_to_base')
