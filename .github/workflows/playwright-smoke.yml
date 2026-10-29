@@ -1,0 +1,42 @@
+name: Playwright smoke tests
+
+on:
+  push:
+    branches:
+      - audit/fix-v13958-scope-offline-cache
+  pull_request:
+    branches: [main]
+
+jobs:
+  browser-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install Playwright
+        run: |
+          npm init -y
+          npm install --no-save playwright
+          npx playwright install --with-deps chromium
+      - name: Serve application
+        run: |
+          python3 -m http.server 4173 > /tmp/orshap-http.log 2>&1 &
+          echo $! > /tmp/orshap-http.pid
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:4173/index.html >/dev/null && exit 0
+            sleep 1
+          done
+          cat /tmp/orshap-http.log
+          exit 1
+      - name: Run browser smoke tests
+        run: node tests/browser-smoke.cjs
+      - name: Upload Playwright artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-smoke-artifacts
+          path: test-results/
+          if-no-files-found: ignore
