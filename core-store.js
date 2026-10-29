@@ -785,6 +785,15 @@ export function queueSnapshot() {
       record: x.payload?.transaction?.reference_no || x.payload?.transaction?.id || ''
     });
   }
+  for (const x of stocktakeCountQueue()) {
+    if (x.status === 'SYNCED') continue;
+    out.push({
+      id: x.operation_id, source: 'stocktake', table: 'stocktake_lines',
+      operation: 'stocktake_count', status: x.status || 'PENDING',
+      attempts: x.attempts || 0, error: x.last_error || '', time: x.updated_at || x.created_at || '',
+      record: x.line_id || x.session_id || ''
+    });
+  }
   return out;
 }
 
@@ -820,10 +829,10 @@ export async function syncAll() {
 
     // Nothing was written and the server could not be read: report the real
     // failure instead of pretending the app is synchronised.
-    if (!master && !transactions && !q.length && refreshError) throw refreshError;
+    if (!master && !transactions && !stocktakeCounts && !q.length && refreshError) throw refreshError;
 
     return {
-      master, transactions, remaining: q.length, pending, errors, conflicts,
+      master, transactions, stocktakeCounts, remaining: q.length, pending, errors, conflicts,
       refreshError: refreshError ? String(refreshError?.message || refreshError) : null
     };
   })();
@@ -1161,7 +1170,7 @@ function queueStocktakeCountLocal(lineId, qty, unitCode, baseUnit, factor, baseQ
   const rows = stocktakeCountQueue();
   const existing = rows.find(x => x.user_id === session.id && x.session_id === stocktake.id && x.line_id === lineId);
   const payload = {
-    operation_id: existing?.operation_id || (crypto?.randomUUID ? crypto.randomUUID() : `stkcount-${session.id}-${stocktake.id}-${lineId}`),
+    operation_id: existing?.operation_id || (window.crypto?.randomUUID ? window.crypto.randomUUID() : `stkcount-${session.id}-${stocktake.id}-${lineId}`),
     user_id: session.id, session_id: stocktake.id, line_id: lineId,
     warehouse_id: stocktake.warehouse_id, quantity: Number(qty), entered_quantity: Number(qty),
     entered_unit: unitCode, base_unit: baseUnit, conversion_factor: Number(factor),
