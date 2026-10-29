@@ -58,7 +58,9 @@ export function canAccessWarehouse(warehouseId) {
 }
 
 export function canManageSettings() {
-  return isAdmin() || can('action:settings:manage') || can('page:settings:access');
+  // Viewing the settings page is not equivalent to permission to mutate
+  // users, roles, or system configuration.
+  return isAdmin() || can('action:settings:manage');
 }
 
 export function canViewSystemQty() {
@@ -94,5 +96,7 @@ export function canAccessPage(page) {
   if (!currentUser()) return false;
   if (isElevated()) return true;
   const set = permissionSet();
-  return set.has(`page:${page}:access`) || set.has('page:*:access') || set.has('*') || set.size === 0;
+  // Fail closed when no page permissions are configured. An empty set can
+  // mean permissions have not loaded or were denied; it must not grant access.
+  return set.has(`page:${page}:access`) || set.has('page:*:access') || set.has('*');
 }
