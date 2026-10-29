@@ -32,7 +32,7 @@ const fs = require('fs');
     // Exercise the real store module in Chromium with isolated in-memory fixtures.
     // No Supabase writes are performed: the browser is deliberately put offline.
     const offlineChecks = await page.evaluate(async () => {
-      const { store, offlineTransactionTypeAllowed, offlineWarehouseAllowed, saveStocktakeCount, queueSnapshot } =
+      const { store, offlineTransactionTypeAllowed, offlineWarehouseAllowed, saveStocktakeCount, queueSnapshot, loadLocal } =
         await import('/core-store.js');
       const userId = '11111111-1111-4111-8111-111111111111';
       const warehouseId = '22222222-2222-4222-8222-222222222222';
@@ -70,11 +70,23 @@ const fs = require('fs');
         key.startsWith('orshap_stocktake_count_queue_v1:')
       );
       const queueRows = queueKey ? JSON.parse(localStorage.getItem(queueKey)) : [];
+
+      // A shared device must not hydrate another user's cached warehouse data.
+      localStorage.setItem('orshap_wms_data_v5', JSON.stringify({
+        __cached_user_id: '77777777-7777-4777-8777-777777777777',
+        warehouses: [{ id: warehouseId, name: 'foreign cached warehouse' }],
+        stock: [{ id: 'foreign-stock' }]
+      }));
+      store.data.warehouses = [{ id: warehouseId, name: 'stale in-memory warehouse' }];
+      const foreignSnapshotRejected = loadLocal() === false
+        && store.data.warehouses.length === 0 && store.data.stock.length === 0;
+
       return {
         issueAllowed, receiptDenied, assignedWarehouseAllowed, otherWarehouseDenied,
         multiWarehouseDenied, countQueued: !!saved.pending_sync && queued,
         convertedBaseQuantity: saved.counted_qty,
-        queueOwnerMatches: queueRows.length === 1 && queueRows[0].user_id === userId
+        queueOwnerMatches: queueRows.length === 1 && queueRows[0].user_id === userId,
+        foreignSnapshotRejected
       };
     });
     const failedChecks = Object.entries(offlineChecks).filter(([key, value]) =>
@@ -83,7 +95,7 @@ const fs = require('fs');
     if (failedChecks.length) throw new Error('Offline store checks failed: ' + JSON.stringify(offlineChecks));
 
     if (errors.length) throw new Error('Browser errors:\\n' + errors.join('\\n'));
-    console.log('PASS: login desktop/mobile smoke; no browser errors; offline policy allows ISSUE only; single-warehouse scope enforced; multi-warehouse offline denied; stocktake count queued locally with BOX x12 = 24 PCS and bound to its creator.');
+    console.log('PASS: login desktop/mobile smoke; no browser errors; offline policy allows ISSUE only; single-warehouse scope enforced; multi-warehouse offline denied; stocktake count queued locally with BOX x12 = 24 PCS and bound to its creator; foreign-user cached snapshot rejected.');
   } catch (error) {
     fs.mkdirSync('test-results', { recursive: true });
     await page.screenshot({ path: 'test-results/failure.png', fullPage: true }).catch(() => {});
