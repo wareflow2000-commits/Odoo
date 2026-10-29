@@ -18,6 +18,7 @@ const LS_KEY = 'orshap_wms_data_v5';
 const LS_LANG = 'orshap_lang';
 const MASTER_PREFIX = 'orshap_master_outbox_v1:';
 const OUTBOX_PREFIX = 'orshap_tx_outbox_v1:';
+const STOCKTAKE_COUNT_QUEUE_PREFIX = 'orshap_stocktake_count_queue_v1:';
 
 // Supabase surfaces transport failures as several different messages depending
 // on browser/fetch implementation. Treat them all as "queue it and retry later",
@@ -802,6 +803,7 @@ export async function syncAll() {
 
     const master = await flushMasterQueue();
     const transactions = await flushOutbox();
+    const stocktakeCounts = await flushStocktakeCountQueue();
 
     let refreshError = null;
     try {
@@ -1119,6 +1121,102 @@ export async function createStocktakeSession({ warehouseId, storageAreaId, type 
   return res;
 }
 
+function stocktakeCountQueue() {
+  try {
+    const rows = JSON.parse(localStorage.getItem(STOCKTAKE_COUNT_QUEUE_PREFIX + currentUserId()) || '[]');
+    return Array.isArray(rows) ? rows : [];
+  } catch (_) { return []; }
+}
+
+function stocktakeCountQueueWrite(rows) {
+  localStorage.setItem(STOCKTAKE_COUNT_QUEUE_PREFIX + currentUserId(), JSON.stringify(rows));
+  window.dispatchEvent(new CustomEvent('orshap-outbox-changed', {
+    detail: { count: rows.filter(x => !['SYNCED', 'ERROR', 'CONFLICT'].includes(x.status)).length }
+  }));
+}
+
+function queueStocktakeCountLocal(lineId, qty, unitCode, baseUnit, factor, baseQty) {
+  const session = window.__session;
+  const line = byId('stocktake_lines', lineId);
+  const stocktake = line && byId('stocktake_sessions', line.session_id);
+  if (!session?.id || !line || !stocktake || stocktake.status !== 'IN_PROGRESS'
+      || !['DRAFT', 'REJECTED'].includes(String(stocktake.review_status || 'DRAFT').toUpperCase())) {
+    throw new Error(isAr()
+      ? 'لا يمكن حفظ العد دون اتصال: جلسة الجرد غير موجودة محلياً أو لم تعد قابلة للعد.'
+      : 'Cannot queue this count offline: the session is unavailable locally or is no longer editable.');
+  }
+  if (!offlineWarehouseAllowed(stocktake.warehouse_id)) {
+    throw new Error(isAr()
+      ? 'العد دون اتصال مسموح فقط لمستخدم معيّن لمستودع واحد، وضمن ذلك المستودع.'
+      : 'Offline counting requires exactly one explicitly assigned warehouse and that session must belong to it.');
+  }
+  const profiles = [session.profile, byId('profiles', session.id)].filter(Boolean);
+  const isManager = ELEVATED_ROLES.includes(String(session.role || '').toUpperCase());
+  if (!isManager && stocktake.created_by !== session.id) {
+    throw new Error(isAr()
+      ? 'العد دون اتصال متاح فقط لمنشئ جلسة الجرد.'
+      : 'Offline counting is available only to the stocktake session creator.');
+  }
+  const now = new Date().toISOString();
+  const rows = stocktakeCountQueue();
+  const existing = rows.find(x => x.user_id === session.id && x.session_id === stocktake.id && x.line_id === lineId);
+  const payload = {
+    operation_id: existing?.operation_id || (crypto?.randomUUID ? crypto.randomUUID() : `stkcount-${session.id}-${stocktake.id}-${lineId}`),
+    user_id: session.id, session_id: stocktake.id, line_id: lineId,
+    warehouse_id: stocktake.warehouse_id, quantity: Number(qty), entered_quantity: Number(qty),
+    entered_unit: unitCode, base_unit: baseUnit, conversion_factor: Number(factor),
+    base_quantity: Number(baseQty), status: 'PENDING', attempts: existing?.attempts || 0,
+    created_at: existing?.created_at || now, updated_at: now, last_error: null
+  };
+  if (existing) Object.assign(existing, payload);
+  else rows.push(payload);
+  stocktakeCountQueueWrite(rows);
+  line.counted_qty = Number(baseQty);
+  line.entered_quantity = Number(qty);
+  line.entered_unit = unitCode;
+  line.conversion_factor = Number(factor);
+  line.base_unit = baseUnit;
+  line.variance = Number(baseQty) - Number(line.system_qty || 0);
+  line._count_pending_sync = true;
+  persist(true);
+  store.emit();
+  return { counted_qty: Number(baseQty), entered_quantity: Number(qty), entered_unit: unitCode,
+    conversion_factor: Number(factor), base_unit: baseUnit, pending_sync: true };
+}
+
+async function flushStocktakeCountQueue() {
+  if (!navigator.onLine || !window.__session?.id || !(await ensureOnlineSession())) return 0;
+  const rows = stocktakeCountQueue();
+  let done = 0, changed = false;
+  for (const row of rows) {
+    if (row.user_id !== window.__session.id || ['SYNCED', 'ERROR', 'CONFLICT'].includes(row.status)) continue;
+    try {
+      if (!offlineWarehouseAllowed(row.warehouse_id)) {
+        throw new Error('Offline stocktake count belongs to a warehouse outside the current single-warehouse offline scope.');
+      }
+      if (row.entered_unit && normalizeUnitCode(row.entered_unit) !== normalizeUnitCode(row.base_unit)) {
+        await rpc('save_stocktake_count_v2', {
+          p_line_id: row.line_id, p_entered_quantity: row.entered_quantity, p_entered_unit: row.entered_unit
+        });
+      } else {
+        await rpc('save_stocktake_count', { p_line_id: row.line_id, p_counted_qty: row.base_quantity });
+      }
+      row.status = 'SYNCED'; row.synced_at = new Date().toISOString(); row.last_error = null;
+      changed = true; done++;
+    } catch (e) {
+      row.attempts = (row.attempts || 0) + 1;
+      row.last_error = String(e?.message || e);
+      row.status = isNetworkFailure(e) ? 'PENDING'
+        : (/unit|factor|quantity|count|session|permission|scope|not found|editable|review|status/i.test(row.last_error) ? 'CONFLICT' : 'ERROR');
+      changed = true;
+      if (row.status === 'PENDING') break;
+    }
+  }
+  if (changed) stocktakeCountQueueWrite(rows.filter(x => x.status !== 'SYNCED'));
+  if (done) await pullAll({ silent: true }).catch(() => {});
+  return done;
+}
+
 export async function saveStocktakeCount(lineId, qty, enteredUnit = null) {
   const line = byId('stocktake_lines', lineId);
   const baseUnit = normalizeUnitCode(line?.base_unit || store.byId('items', line?.item_id)?.base_unit || 'PCS');
@@ -1127,6 +1225,8 @@ export async function saveStocktakeCount(lineId, qty, enteredUnit = null) {
   let factor = 1;
   let res;
 
+  if (!Number.isFinite(Number(qty)) || Number(qty) < 0) throw new Error(isAr() ? 'أدخل كمية صحيحة غير سالبة.' : 'Enter a valid non-negative quantity.');
+  if (!line) throw new Error(isAr() ? 'سطر الجرد غير موجود.' : 'Stocktake line not found.');
   if (enteredUnit && unitCode !== baseUnit) {
     const units = unitOptions(line?.item_id);
     const unit = units.find(u => u.value === unitCode);
@@ -1137,14 +1237,24 @@ export async function saveStocktakeCount(lineId, qty, enteredUnit = null) {
     }
     factor = Number(unit.factor);
     baseQty = Number(qty) * factor;
-    res = await rpc('save_stocktake_count_v2', {
-      p_line_id: lineId,
-      p_entered_quantity: Number(qty),
-      p_entered_unit: unitCode
-    });
-    baseQty = Number(res?.counted_qty ?? baseQty);
-  } else {
-    res = await rpc('save_stocktake_count', { p_line_id: lineId, p_counted_qty: Number(qty) });
+  }
+  // Offline mode queues only counts for an already-created editable server session.
+  // Session creation, submission, review and settlement remain online-only.
+  if (!navigator.onLine || window.__session?.offline) {
+    return queueStocktakeCountLocal(lineId, Number(qty), unitCode, baseUnit, factor, baseQty);
+  }
+  try {
+    if (enteredUnit && unitCode !== baseUnit) {
+      res = await rpc('save_stocktake_count_v2', {
+        p_line_id: lineId, p_entered_quantity: Number(qty), p_entered_unit: unitCode
+      });
+      baseQty = Number(res?.counted_qty ?? baseQty);
+    } else {
+      res = await rpc('save_stocktake_count', { p_line_id: lineId, p_counted_qty: Number(qty) });
+    }
+  } catch (e) {
+    if (isNetworkFailure(e)) return queueStocktakeCountLocal(lineId, Number(qty), unitCode, baseUnit, factor, baseQty);
+    throw e;
   }
 
   if (line) {
