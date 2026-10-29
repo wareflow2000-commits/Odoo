@@ -1295,8 +1295,9 @@ async function flushStocktakeCountQueue() {
         if (!currentUnit || !Number.isFinite(currentFactor) || currentFactor <= 0 || !Number.isFinite(savedFactor) || Math.abs(currentFactor - savedFactor) > 1e-9) {
           throw new Error('Unit conversion factor changed; review and re-enter this offline count.');
         }
-        await rpc('save_stocktake_count_v2', {
-          p_line_id: row.line_id, p_entered_quantity: row.entered_quantity, p_entered_unit: row.entered_unit
+        await rpc('save_stocktake_count_v3', {
+          p_line_id: row.line_id, p_entered_quantity: row.entered_quantity,
+          p_entered_unit: row.entered_unit, p_expected_factor: savedFactor
         });
       } else {
         await rpc('save_stocktake_count', { p_line_id: row.line_id, p_counted_qty: row.base_quantity });
