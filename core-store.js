@@ -264,6 +264,7 @@ export async function pullAll({ silent = false } = {}) {
     // the local queue visible even when another tab cleared the snapshot.
     applyMasterOverlay();
     applyOutboxOverlay();
+    applyStocktakeCountOverlay();
     store.loaded = true;
     return store.data;
   }
@@ -310,6 +311,7 @@ export async function pullAll({ silent = false } = {}) {
     enrichAll();
     applyMasterOverlay();
     applyOutboxOverlay();
+    applyStocktakeCountOverlay();
     applyAccessFilter();
     store.offline = false;
     store.loaded = true;
@@ -686,6 +688,34 @@ function applyOutboxOverlay() {
     }
   }
   enrichAll();
+}
+
+function applyStocktakeCountOverlay() {
+  const userId = currentUserId();
+  if (!userId) return;
+  const sessions = new Map(store.get('stocktake_sessions').map(s => [s.id, s]));
+  const lines = new Map(store.get('stocktake_lines').map(l => [l.id, l]));
+  let changed = false;
+  for (const row of stocktakeCountQueue()) {
+    if (row.user_id !== userId || row.status === 'SYNCED') continue;
+    const line = lines.get(row.line_id);
+    const session = line && sessions.get(line.session_id);
+    // Only overlay a local count onto the matching locally cached line/session.
+    // Never create rows from queue data or cross a session/warehouse boundary.
+    if (!line || !session || session.id !== row.session_id
+        || session.warehouse_id !== row.warehouse_id) continue;
+    line.counted_qty = Number(row.base_quantity);
+    line.entered_quantity = Number(row.entered_quantity);
+    line.entered_unit = row.entered_unit || row.base_unit || line.base_unit;
+    line.conversion_factor = Number(row.conversion_factor || 1);
+    line.base_unit = row.base_unit || line.base_unit;
+    line.variance = line.counted_qty - Number(line.system_qty || 0);
+    line._count_pending_sync = true;
+    line._count_sync_status = row.status || 'PENDING';
+    line._count_sync_error = row.last_error || null;
+    changed = true;
+  }
+  if (changed) enrichAll();
 }
 
 function repairOutboxIds(op) {
