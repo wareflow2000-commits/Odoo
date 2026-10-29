@@ -1335,12 +1335,14 @@ export async function saveStocktakeCount(lineId, qty, enteredUnit = null) {
 }
 
 export async function submitStocktake(sessionId) {
+  requireLiveConnection('إرسال الجرد للمراجعة يتطلب اتصالاً مباشراً.', 'Submitting a stocktake for review requires a live connection.');
   const res = await rpc('submit_stocktake_for_review', { p_session_id: sessionId });
   await pullAll({ silent: true }).catch(() => {});
   return res;
 }
 
 export async function reviewStocktake(sessionId, approve, comment) {
+  requireLiveConnection('مراجعة الجرد واعتماده يتطلبان اتصالاً مباشراً.', 'Stocktake review and approval require a live connection.');
   const res = await rpc('review_stocktake_session', {
     p_session_id: sessionId, p_approve: !!approve, p_comment: comment || null
   });
@@ -1349,6 +1351,7 @@ export async function reviewStocktake(sessionId, approve, comment) {
 }
 
 export async function settleStocktake(sessionId, lineIds, direction, comments = {}) {
+  requireLiveConnection('تسوية فروقات الجرد تتطلب اتصالاً مباشراً.', 'Stocktake variance settlement requires a live connection.');
   const res = await rpc('process_stocktake_settlement_with_direction', {
     p_session_id: sessionId, p_line_ids: lineIds,
     p_direction: direction, p_line_comments: comments || {}
@@ -1358,6 +1361,7 @@ export async function settleStocktake(sessionId, lineIds, direction, comments = 
 }
 
 export async function closeStocktake(sessionId) {
+  requireLiveConnection('إغلاق الجرد يتطلب اتصالاً مباشراً.', 'Closing a stocktake requires a live connection.');
   const res = await rpc('close_stocktake_session_direct', { p_session_id: sessionId });
   await pullAll({ silent: true }).catch(() => {});
   return res;
