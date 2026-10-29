@@ -92,10 +92,12 @@ export function offlineTransactionTypeAllowed(type) {
 export function offlineWarehouseAllowed(warehouseId) {
   const session = window.__session;
   if (!warehouseId || !session?.id) return false;
-  const profile = profiles.find(p => Array.isArray(p.assigned_warehouse_ids) && p.assigned_warehouse_ids.length)
-    || profiles.find(p => Array.isArray(p.assigned_warehouse_ids))
-    || session.profile
-    || {};
+  // Resolve scope only from the active user's own profile. Never borrow another
+  // cached profile's warehouse assignments just because it appears first.
+  const cachedProfile = store.get('profiles').find(p => p.id === session.id);
+  const profile = session.profile?.id === session.id
+    ? session.profile
+    : (cachedProfile || {});
   const assigned = [...new Set((profile.assigned_warehouse_ids || []).filter(Boolean))];
   if (assigned.length !== 1 || assigned[0] !== warehouseId) return false;
   const accessible = Array.isArray(profile.accessible_warehouse_ids)
@@ -330,9 +332,25 @@ function applyAccessFilter() {
   const user = window.__session;
   const elevated = isElevated();
   const assigned = Array.isArray(user?.profile?.assigned_warehouse_ids)
-    ? user.profile.assigned_warehouse_ids : [];
+    ? [...new Set(user.profile.assigned_warehouse_ids.filter(Boolean))] : [];
   store.noWarehouseAccess = !elevated && assigned.length === 0;
-  if (elevated || !assigned.length) return;
+
+  // A non-elevated account with no warehouse scope must not retain warehouse,
+  // movement, audit, or balance data from a previously hydrated local snapshot.
+  // Global item/unit/category catalog data is intentionally kept available.
+  if (!elevated && assigned.length === 0) {
+    for (const t of [
+      'warehouses', 'zones', 'storage_areas', 'warehouse_storage_areas',
+      'sections', 'shelves', 'stock', 'transactions', 'transaction_lines',
+      'stocktake_sessions', 'stocktake_lines', 'stocktake_logs',
+      'stock_transfers', 'stock_transfer_orders', 'inventory_ledger',
+      'transaction_ledger', 'transaction_audit', 'audit_logs',
+      'archive_movements', 'archive_balances', 'sync_log'
+    ]) store.data[t] = [];
+    enrichAll();
+    return;
+  }
+  if (elevated) return;
 
   const allow = new Set(assigned);
   store.data.warehouses = store.get('warehouses').filter(w => allow.has(w.id));
@@ -342,8 +360,8 @@ function applyAccessFilter() {
   store.data.shelves = store.get('shelves').filter(s => allow.has(s.warehouse_id));
   const shelfIds = new Set(store.data.shelves.map(s => s.id));
   store.data.stock = store.get('stock').filter(s => shelfIds.has(s.shelf_id));
-  const itemIds = new Set(store.data.stock.map(s => s.item_id));
-  store.data.items = store.get('items').filter(i => itemIds.has(i.id) || allow.has(i.default_warehouse_id));
+  // Items are a global catalog in this WMS; warehouse scope applies to stock
+  // and movements, not ownership/visibility of catalog definitions.
   const txIds = new Set(store.get('transactions').filter(t => allow.has(t.warehouse_id)).map(t => t.id));
   store.data.transactions = store.get('transactions').filter(t => txIds.has(t.id));
   store.data.transaction_lines = store.get('transaction_lines').filter(l => txIds.has(l.transaction_id));
@@ -353,9 +371,13 @@ function applyAccessFilter() {
   store.data.stocktake_logs = store.get('stocktake_logs').filter(l => sessionIds.has(l.session_id));
   store.data.stock_transfers = store.get('stock_transfers').filter(t => allow.has(t.source_warehouse_id) || allow.has(t.destination_warehouse_id));
   store.data.stock_transfer_orders = store.get('stock_transfer_orders').filter(o => allow.has(o.source_warehouse_id) || allow.has(o.destination_warehouse_id));
+  // Null warehouse IDs cannot be treated as globally visible: older or
+  // malformed audit/ledger rows otherwise bypass the warehouse restriction.
   for (const t of ['inventory_ledger', 'transaction_ledger', 'transaction_audit', 'archive_movements', 'archive_balances']) {
-    store.data[t] = store.get(t).filter(r => !r.warehouse_id || allow.has(r.warehouse_id));
+    store.data[t] = store.get(t).filter(r => !!r.warehouse_id && allow.has(r.warehouse_id));
   }
+  store.data.audit_logs = store.get('audit_logs').filter(r => !!r.warehouse_id && allow.has(r.warehouse_id));
+  store.data.sync_log = store.get('sync_log').filter(r => !!r.warehouse_id && allow.has(r.warehouse_id));
   enrichAll();
 }
 
