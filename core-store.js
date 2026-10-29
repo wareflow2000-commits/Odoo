@@ -1193,7 +1193,7 @@ function queueStocktakeCountLocal(lineId, qty, unitCode, baseUnit, factor, baseQ
   const existing = rows.find(x => x.user_id === session.id && x.session_id === stocktake.id && x.line_id === lineId);
   const payload = {
     operation_id: existing?.operation_id || (window.crypto?.randomUUID ? window.crypto.randomUUID() : `stkcount-${session.id}-${stocktake.id}-${lineId}`),
-    user_id: session.id, session_id: stocktake.id, line_id: lineId,
+    user_id: session.id, session_id: stocktake.id, line_id: lineId, item_id: line.item_id,
     warehouse_id: stocktake.warehouse_id, quantity: Number(qty), entered_quantity: Number(qty),
     entered_unit: unitCode, base_unit: baseUnit, conversion_factor: Number(factor),
     base_quantity: Number(baseQty), status: 'PENDING', attempts: existing?.attempts || 0,
