@@ -335,6 +335,35 @@ function applyAccessFilter() {
     ? [...new Set(user.profile.assigned_warehouse_ids.filter(Boolean))] : [];
   store.noWarehouseAccess = !elevated && assigned.length === 0;
 
+  // Explicit user assignments restrict every role, including managers. This
+  // mirrors current_user_can_access_warehouse(), where a user-level list is
+  // always an additional restriction even when the role is otherwise elevated.
+  if (assigned.length > 0) {
+    const allow = new Set(assigned);
+    store.data.warehouses = store.get('warehouses').filter(w => allow.has(w.id));
+    store.data.zones = store.get('zones').filter(z => allow.has(z.warehouse_id));
+    store.data.storage_areas = store.get('storage_areas').filter(a => allow.has(a.warehouse_id));
+    store.data.warehouse_storage_areas = store.get('warehouse_storage_areas').filter(a => allow.has(a.warehouse_id));
+    store.data.sections = store.get('sections').filter(x => allow.has(x.warehouse_id));
+    store.data.shelves = store.get('shelves').filter(x => allow.has(x.warehouse_id));
+    const shelfIds = new Set(store.data.shelves.map(x => x.id));
+    store.data.stock = store.get('stock').filter(x => shelfIds.has(x.shelf_id));
+    const txIds = new Set(store.get('transactions').filter(x => allow.has(x.warehouse_id)).map(x => x.id));
+    store.data.transactions = store.get('transactions').filter(x => txIds.has(x.id));
+    store.data.transaction_lines = store.get('transaction_lines').filter(x => txIds.has(x.transaction_id));
+    const sessionIds = new Set(store.get('stocktake_sessions').filter(x => allow.has(x.warehouse_id)).map(x => x.id));
+    store.data.stocktake_sessions = store.get('stocktake_sessions').filter(x => sessionIds.has(x.id));
+    store.data.stocktake_lines = store.get('stocktake_lines').filter(x => sessionIds.has(x.session_id));
+    store.data.stocktake_logs = store.get('stocktake_logs').filter(x => sessionIds.has(x.session_id));
+    store.data.stock_transfers = store.get('stock_transfers').filter(x => allow.has(x.source_warehouse_id) || allow.has(x.destination_warehouse_id));
+    store.data.stock_transfer_orders = store.get('stock_transfer_orders').filter(x => allow.has(x.source_warehouse_id) || allow.has(x.destination_warehouse_id));
+    for (const t of ['inventory_ledger', 'transaction_ledger', 'transaction_audit', 'archive_movements', 'archive_balances', 'audit_logs', 'sync_log']) {
+      store.data[t] = store.get(t).filter(x => !!x.warehouse_id && allow.has(x.warehouse_id));
+    }
+    enrichAll();
+    return;
+  }
+
   // A non-elevated account with no warehouse scope must not retain warehouse,
   // movement, audit, or balance data from a previously hydrated local snapshot.
   // Global item/unit/category catalog data is intentionally kept available.
