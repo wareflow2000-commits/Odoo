@@ -1,3 +1,25 @@
+-- Fail closed if the live function differs from the exact reviewed baseline.
+DO $preflight$
+DECLARE v_definition text; v_source_check_count integer;
+BEGIN
+  SELECT pg_get_functiondef(p.oid) INTO v_definition
+  FROM pg_proc p
+  WHERE p.oid = to_regprocedure('public.dispatch_stock_transfer_order_v2(uuid,uuid,text,uuid,uuid,jsonb,text)');
+  IF v_definition IS NULL THEN
+    RAISE EXCEPTION 'Expected dispatch_stock_transfer_order_v2 signature is missing; abort migration';
+  END IF;
+  IF position('current_user_can_access_warehouse(p_destination_warehouse_id)' IN v_definition) > 0 THEN
+    RAISE EXCEPTION 'Destination-scope check already exists; review live definition instead of overwriting it';
+  END IF;
+  v_source_check_count :=
+    (length(v_definition) - length(replace(v_definition, 'current_user_can_access_warehouse(p_source_warehouse_id)', '')))
+    / length('current_user_can_access_warehouse(p_source_warehouse_id)');
+  IF v_source_check_count <> 2 THEN
+    RAISE EXCEPTION 'Live function differs from the reviewed duplicate-source-check baseline; abort migration';
+  END IF;
+END;
+$preflight$;
+
 -- ORSHAP WMS v13.9.58: enforce destination scope before transfer-order replay/creation.
 -- Rebuilt from the current live function definition during read-only audit; review before applying.
 CREATE OR REPLACE FUNCTION public.dispatch_stock_transfer_order_v2(p_order_id uuid, p_reference_no text, p_source_warehouse_id uuid, p_destination_warehouse_id uuid, p_lines jsonb, p_notes text DEFAULT NULL::text)
