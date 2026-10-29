@@ -20,7 +20,6 @@ BEGIN
   IF NOT FOUND THEN RAISE EXCEPTION 'Active user profile required'; END IF;
   IF NOT public.current_user_can_access_warehouse(p_source_warehouse_id) THEN RAISE EXCEPTION 'User is not assigned to the source warehouse' USING ERRCODE='42501'; END IF;
   IF NOT public.current_user_can_access_warehouse(p_destination_warehouse_id) THEN RAISE EXCEPTION 'User is not assigned to the destination warehouse' USING ERRCODE='42501'; END IF;
-  IF NOT public.current_user_can_access_warehouse(p_source_warehouse_id) THEN RAISE EXCEPTION 'User is not assigned to the source warehouse' USING ERRCODE='42501'; END IF;
   SELECT * INTO v_existing FROM public.stock_transfer_orders WHERE id=p_order_id;
   IF FOUND THEN
     IF v_existing.created_by IS DISTINCT FROM v_user OR v_existing.reference_no IS DISTINCT FROM btrim(p_reference_no) OR v_existing.source_warehouse_id IS DISTINCT FROM p_source_warehouse_id OR v_existing.destination_warehouse_id IS DISTINCT FROM p_destination_warehouse_id OR v_existing.notes IS DISTINCT FROM p_notes THEN RAISE EXCEPTION 'Idempotency conflict: order ID already exists with different data'; END IF;
