@@ -92,7 +92,6 @@ export function offlineTransactionTypeAllowed(type) {
 export function offlineWarehouseAllowed(warehouseId) {
   const session = window.__session;
   if (!warehouseId || !session?.id) return false;
-  const profiles = [session.profile, byId('profiles', session.id)].filter(Boolean);
   const profile = profiles.find(p => Array.isArray(p.assigned_warehouse_ids) && p.assigned_warehouse_ids.length)
     || profiles.find(p => Array.isArray(p.assigned_warehouse_ids))
     || session.profile
