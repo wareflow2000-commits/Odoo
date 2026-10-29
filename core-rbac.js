@@ -22,9 +22,13 @@ export function rolePermissions() {
 
 let permCache = { key: '', keys: new Set() };
 function permissionSet() {
-  const key = `${role()}|${(currentUser()?.profile?.custom_permissions || []).join(',')}|${store.get('role_permissions').length}`;
+  // Cache by the actual permission keys, not row count: replacing a role's
+  // permissions with a different set of the same size must invalidate cache.
+  const roleKeys = rolePermissions().map(String).sort();
+  const customKeys = customPermissions().map(String).sort();
+  const key = `${role()}|r:${roleKeys.join(',')}|c:${customKeys.join(',')}`;
   if (permCache.key === key) return permCache.keys;
-  const set = new Set([...rolePermissions(), ...customPermissions()]);
+  const set = new Set([...roleKeys, ...customKeys]);
   permCache = { key, keys: set };
   return set;
 }
