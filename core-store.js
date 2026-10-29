@@ -33,9 +33,10 @@ const signInOnlineMessage = () => isAr()
   ? 'سجّل الدخول عبر الإنترنت مرة واحدة لاستعادة جلسة الخادم ثم أعد المزامنة'
   : 'Sign in online once to restore the server session, then sync again';
 
-// OW posts stock only online. Offline entry is limited to receipts and issues
-// from the user's single explicitly assigned warehouse.
-const OFFLINE_TX_TYPES = new Set(['GRN', 'ISSUE']);
+// Only ISSUE vouchers may be entered offline. Stocktake counts use their own
+// queue; receipts/supplies, transfers, returns, adjustments and other vouchers
+// require a live connection. Offline scope remains one explicitly assigned warehouse.
+const OFFLINE_TX_TYPES = new Set(['ISSUE']);
 
 export const TABLES = [
   'warehouses', 'zones', 'storage_areas', 'warehouse_storage_areas',
@@ -751,7 +752,7 @@ export async function flushOutbox() {
     try {
       const tx = op.payload?.transaction;
       if (!tx || !offlineTransactionTypeAllowed(tx.transaction_type)) {
-        throw new Error('Offline sync only supports GRN and ISSUE transactions; other vouchers require a live connection.');
+        throw new Error('Offline sync only supports ISSUE transactions; stocktake counts use a separate queue. All other transactions require a live connection.');
       }
       if (!offlineWarehouseAllowed(tx.warehouse_id) || tx.created_by !== window.__session.id) {
         throw new Error('Offline transaction requires exactly one explicitly assigned warehouse and must remain within the current effective scope.');
@@ -968,8 +969,8 @@ export async function createTransactionBundle({
   const assertOfflineEligible = () => {
     if (!offlineTransactionTypeAllowed(normalizedType)) {
       throw new Error(isAr()
-        ? 'دون اتصال: يُسمح بالتوريد والصرف فقط. تحتاج التسويات والمرتجعات إلى اتصال مباشر.'
-        : 'Offline mode supports receipts and issues only. Adjustments and returns require a live connection.');
+        ? 'دون اتصال: يُسمح بالصرف وعدّ الجرد فقط. التوريد والتحويل والاستلام والإرجاع والتسويات وبقية المعاملات تتطلب اتصالاً مباشراً.'
+        : 'Offline mode supports issues and stocktake counts only. Receipts, transfers, receiving, returns, adjustments, and all other transactions require a live connection.');
     }
     if (!offlineWarehouseAllowed(warehouse_id)) {
       throw new Error(isAr()
@@ -1093,6 +1094,7 @@ export async function createStockReturnRequest({
 /* ── transfers ──────────────────────────────────────────────────────────── */
 
 export async function dispatchTransfer({ orderId, referenceNo, sourceWarehouseId, destinationWarehouseId, lines, notes }) {
+  requireLiveConnection('إنشاء التحويل يتطلب اتصالاً مباشراً.', 'Transfer dispatch requires a live connection.');
   const res = await rpc('dispatch_stock_transfer_order_v3', {
     p_order_id: orderId || uid(),
     p_reference_no: referenceNo || ('TRF-' + Date.now()),
@@ -1106,6 +1108,7 @@ export async function dispatchTransfer({ orderId, referenceNo, sourceWarehouseId
 }
 
 export async function receiveTransfer({ transferId, qty, shelfId, returnRemaining = false, reason = null, operationId = null }) {
+  requireLiveConnection('استلام التحويل يتطلب اتصالاً مباشراً.', 'Transfer receiving requires a live connection.');
   const res = await rpc('receive_stock_transfer_quantity_at_shelf_v2', {
     p_transfer_id: transferId,
     p_received_quantity: Number(qty),
@@ -1119,12 +1122,14 @@ export async function receiveTransfer({ transferId, qty, shelfId, returnRemainin
 }
 
 export async function rejectTransferReceipt(id, reason) {
+  requireLiveConnection('رفض الاستلام يتطلب اتصالاً مباشراً.', 'Receipt rejection requires a live connection.');
   const res = await rpc('reject_stock_transfer_receipt', { p_transfer_id: id, p_reason: reason });
   await pullAll({ silent: true }).catch(() => {});
   return res;
 }
 
 export async function reviewTransferReturn(id, decision, note) {
+  requireLiveConnection('مراجعة طلب الإرجاع تتطلب اتصالاً مباشراً.', 'Return review requires a live connection.');
   const res = await rpc('review_stock_transfer_return_request', {
     p_transfer_id: id, p_decision: decision, p_note: note || null
   });
@@ -1133,6 +1138,7 @@ export async function reviewTransferReturn(id, decision, note) {
 }
 
 export async function confirmTransferReturn(id) {
+  requireLiveConnection('تأكيد الإرجاع يتطلب اتصالاً مباشراً.', 'Return confirmation requires a live connection.');
   const res = await rpc('confirm_stock_transfer_return_v2', { p_transfer_id: id });
   await pullAll({ silent: true }).catch(() => {});
   return res;
@@ -1141,6 +1147,7 @@ export async function confirmTransferReturn(id) {
 /* ── stocktake ──────────────────────────────────────────────────────────── */
 
 export async function createStocktakeSession({ warehouseId, storageAreaId, type = 'CYCLE', mode = 'VISIBLE', notes }) {
+  requireLiveConnection('إنشاء جلسة الجرد يتطلب اتصالاً مباشراً؛ عدّ الكميات فقط يمكن حفظه محلياً.', 'Creating a stocktake session requires a live connection; only count entries can be saved offline.');
   const res = await rpc('create_stocktake_session_with_lines', {
     p_warehouse_id: warehouseId,
     p_storage_area_id: storageAreaId || null,
