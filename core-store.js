@@ -130,6 +130,24 @@ export function loadLocal() {
     if (!raw) return false;
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object') return false;
+
+    // Never hydrate a cached snapshot unless it is bound to the currently
+    // authenticated/offline-verified user. Queues are already user-keyed, but
+    // the shared snapshot is not; accepting a missing owner or a different
+    // owner can expose another account's warehouse and audit data on shared
+    // devices. Keep the disk snapshot intact so its owner can sign back in.
+    const activeUserId = window.__session?.id || null;
+    if (!activeUserId || !parsed.__cached_user_id || parsed.__cached_user_id !== activeUserId) {
+      for (const t of TABLES) store.data[t] = [];
+      store.noWarehouseAccess = !!activeUserId
+        && !ELEVATED_ROLES.includes(String(window.__session?.role || '').toUpperCase())
+        && !(Array.isArray(window.__session?.profile?.assigned_warehouse_ids)
+          && window.__session.profile.assigned_warehouse_ids.length);
+      store.loaded = false;
+      enrichAll();
+      return false;
+    }
+
     for (const t of TABLES) {
       if (Array.isArray(parsed[t])) store.data[t] = parsed[t];
     }
@@ -275,12 +293,17 @@ export async function pullAll({ silent = false } = {}) {
       } catch (e) {
         if (REQUIRED.has(t)) throw new Error(`${t}: ${e.message || e}`);
         console.warn(`[store] optional table ${t} unavailable:`, e.message || e);
-        return [t, []];
+        // Preserve the previous in-memory value on a transient read/permission
+        // failure. An unavailable table is not evidence that it is empty.
+        return [t, null];
       }
     }));
-    for (const [t, list] of results) store.data[t] = list;
+    for (const [t, list] of results) {
+      if (list !== null) store.data[t] = list;
+    }
 
-    // Keep the previous cache for tables that failed entirely (offline resilience).
+    // Optional tables that failed to read retain their prior cache; only a
+    // successful query returning zero rows is allowed to replace data with [].
     enrichAll();
     applyMasterOverlay();
     applyOutboxOverlay();
