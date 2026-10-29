@@ -1222,6 +1222,7 @@ async function flushStocktakeCountQueue() {
   // Read current factors directly from Supabase; pullAll can preserve stale data
   // when an optional table request fails, so it is not sufficient for this check.
   const alternateRows = rows.filter(row => row.user_id === window.__session.id
+    && !['SYNCED', 'ERROR', 'CONFLICT'].includes(row.status)
     && row.entered_unit
     && normalizeUnitCode(row.entered_unit) !== normalizeUnitCode(row.base_unit));
   let freshConversions = null;
