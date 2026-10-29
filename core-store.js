@@ -7,7 +7,7 @@
 //   • tx outbox     → full transaction bundles (stock is NEVER posted offline)
 //   • offline auth  → PBKDF2 verifier cached by core-auth.js
 // ============================================================================
-import { from, rpc } from './core-supabase.js';
+import { from, rpc, sb } from './core-supabase.js';
 import { uuid, isUuid } from './core-utils.js';
 import { isAr } from './core-i18n.js';
 import { ensureOnlineSession } from './core-auth.js';
@@ -1219,6 +1219,26 @@ async function flushStocktakeCountQueue() {
   if (!navigator.onLine || !window.__session?.id || !(await ensureOnlineSession())) return 0;
   await pullAll({ silent: true });
   const rows = stocktakeCountQueue();
+  // Read current factors directly from Supabase; pullAll can preserve stale data
+  // when an optional table request fails, so it is not sufficient for this check.
+  const alternateRows = rows.filter(row => row.user_id === window.__session.id
+    && row.entered_unit
+    && normalizeUnitCode(row.entered_unit) !== normalizeUnitCode(row.base_unit));
+  let freshConversions = null;
+  if (alternateRows.length) {
+    const itemIds = [...new Set(alternateRows.map(row => row.item_id).filter(Boolean))];
+    if (itemIds.length !== new Set(alternateRows.map(row => row.item_id)).size) {
+      throw new Error('Cannot verify all queued stocktake unit conversions; counts remain pending.');
+    }
+    const client = await sb();
+    const result = await client.from('item_unit_conversions')
+      .select('item_id,unit_code,factor_to_base')
+      .in('item_id', itemIds);
+    if (result.error || !Array.isArray(result.data)) {
+      throw new Error('Could not verify current unit conversion factors; counts remain pending.');
+    }
+    freshConversions = result.data;
+  }
   let done = 0, changed = false;
   for (const row of rows) {
     if (row.user_id !== window.__session.id || ['SYNCED', 'ERROR', 'CONFLICT'].includes(row.status)) continue;
@@ -1227,8 +1247,9 @@ async function flushStocktakeCountQueue() {
         throw new Error('Offline stocktake count belongs to a warehouse outside the current single-warehouse offline scope.');
       }
       if (row.entered_unit && normalizeUnitCode(row.entered_unit) !== normalizeUnitCode(row.base_unit)) {
-        const currentUnit = unitOptions(row.item_id).find(u => u.value === normalizeUnitCode(row.entered_unit));
-        const currentFactor = Number(currentUnit?.factor);
+        const currentUnit = freshConversions?.find(c => c.item_id === row.item_id
+          && normalizeUnitCode(c.unit_code) === normalizeUnitCode(row.entered_unit));
+        const currentFactor = Number(currentUnit?.factor_to_base);
         const savedFactor = Number(row.conversion_factor);
         if (!currentUnit || !Number.isFinite(currentFactor) || currentFactor <= 0 || !Number.isFinite(savedFactor) || Math.abs(currentFactor - savedFactor) > 1e-9) {
           throw new Error('Unit conversion factor changed; review and re-enter this offline count.');
