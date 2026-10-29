@@ -380,34 +380,6 @@ function applyAccessFilter() {
     return;
   }
   if (elevated) return;
-
-  const allow = new Set(assigned);
-  store.data.warehouses = store.get('warehouses').filter(w => allow.has(w.id));
-  store.data.zones = store.get('zones').filter(z => allow.has(z.warehouse_id));
-  store.data.storage_areas = store.get('storage_areas').filter(a => allow.has(a.warehouse_id));
-  store.data.sections = store.get('sections').filter(s => allow.has(s.warehouse_id));
-  store.data.shelves = store.get('shelves').filter(s => allow.has(s.warehouse_id));
-  const shelfIds = new Set(store.data.shelves.map(s => s.id));
-  store.data.stock = store.get('stock').filter(s => shelfIds.has(s.shelf_id));
-  // Items are a global catalog in this WMS; warehouse scope applies to stock
-  // and movements, not ownership/visibility of catalog definitions.
-  const txIds = new Set(store.get('transactions').filter(t => allow.has(t.warehouse_id)).map(t => t.id));
-  store.data.transactions = store.get('transactions').filter(t => txIds.has(t.id));
-  store.data.transaction_lines = store.get('transaction_lines').filter(l => txIds.has(l.transaction_id));
-  const sessionIds = new Set(store.get('stocktake_sessions').filter(s => allow.has(s.warehouse_id)).map(s => s.id));
-  store.data.stocktake_sessions = store.get('stocktake_sessions').filter(s => sessionIds.has(s.id));
-  store.data.stocktake_lines = store.get('stocktake_lines').filter(l => sessionIds.has(l.session_id));
-  store.data.stocktake_logs = store.get('stocktake_logs').filter(l => sessionIds.has(l.session_id));
-  store.data.stock_transfers = store.get('stock_transfers').filter(t => allow.has(t.source_warehouse_id) || allow.has(t.destination_warehouse_id));
-  store.data.stock_transfer_orders = store.get('stock_transfer_orders').filter(o => allow.has(o.source_warehouse_id) || allow.has(o.destination_warehouse_id));
-  // Null warehouse IDs cannot be treated as globally visible: older or
-  // malformed audit/ledger rows otherwise bypass the warehouse restriction.
-  for (const t of ['inventory_ledger', 'transaction_ledger', 'transaction_audit', 'archive_movements', 'archive_balances']) {
-    store.data[t] = store.get(t).filter(r => !!r.warehouse_id && allow.has(r.warehouse_id));
-  }
-  store.data.audit_logs = store.get('audit_logs').filter(r => !!r.warehouse_id && allow.has(r.warehouse_id));
-  store.data.sync_log = store.get('sync_log').filter(r => !!r.warehouse_id && allow.has(r.warehouse_id));
-  enrichAll();
 }
 
 /* ── offline master queue ───────────────────────────────────────────────── */
