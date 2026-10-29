@@ -4,7 +4,7 @@ DECLARE v_definition text; v_source_check_count integer;
 BEGIN
   SELECT pg_get_functiondef(p.oid) INTO v_definition
   FROM pg_proc p
-  WHERE p.oid = to_regprocedure('public.dispatch_stock_transfer_order_v2(uuid,uuid,text,uuid,uuid,jsonb,text)');
+  WHERE p.oid = to_regprocedure('public.dispatch_stock_transfer_order_v2(uuid,text,uuid,uuid,jsonb,text)');
   IF v_definition IS NULL THEN
     RAISE EXCEPTION 'Expected dispatch_stock_transfer_order_v2 signature is missing; abort migration';
   END IF;
