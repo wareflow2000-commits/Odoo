@@ -1346,8 +1346,11 @@ export async function saveStocktakeCount(lineId, qty, enteredUnit = null) {
   }
   try {
     if (enteredUnit && unitCode !== baseUnit) {
-      res = await rpc('save_stocktake_count_v2', {
-        p_line_id: lineId, p_entered_quantity: Number(qty), p_entered_unit: unitCode
+      res = await rpc('save_stocktake_count_v3', {
+        p_line_id: lineId,
+        p_entered_quantity: Number(qty),
+        p_entered_unit: unitCode,
+        p_expected_factor: factor
       });
       baseQty = Number(res?.counted_qty ?? baseQty);
     } else {
