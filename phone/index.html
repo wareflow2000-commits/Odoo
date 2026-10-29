@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#714B67">
+<meta name="description" content="OW — واجهة الهاتف لإدارة المستودعات">
+<title>OW — الهاتف</title>
+<link rel="manifest" href="../manifest.webmanifest">
+<link rel="icon" type="image/png" href="../assets/logo.png">
+<link rel="apple-touch-icon" href="../assets/logo.png">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+<link rel="stylesheet" href="../style-base.css">
+<link rel="stylesheet" href="../style-shell.css">
+<link rel="stylesheet" href="../style-wms.css">
+<style>
+  /* Phone entry only: keep the existing app components and constrain the shell
+     to a compact viewport. These rules do not affect the desktop entry point. */
+  html, body { min-height: 100%; }
+  body { margin: 0; }
+  #appShell { min-height: 100dvh; }
+  #menubar { display: none !important; }
+  .o_main { min-width: 0; padding-bottom: calc(76px + env(safe-area-inset-bottom)); }
+  .o_mobile_nav {
+    position: fixed;
+    inset-inline: 0;
+    bottom: 0;
+    z-index: 1000;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .o_navbar { padding-top: env(safe-area-inset-top); }
+  #mainContent, #mainContent * { min-width: 0; }
+  @media (max-width: 680px) {
+    .o_page_head { padding: 14px 12px 10px; gap: 10px; }
+    .o_page_title { font-size: 19px; }
+    .o_control_panel { padding-inline: 12px; }
+    .o_page_body { padding-inline: 10px; }
+    .o_card_body { padding: 12px; }
+    .o_page_actions { max-width: 100%; }
+    .o_page_actions .o_btn { max-width: 100%; }
+    table { min-width: 640px; }
+  }
+</style>
+</head>
+<body>
+<!-- The existing login IDs and handlers are intentionally retained because main.js
+     owns authentication and expects these elements to exist. -->
+<div id="loginPage" class="login-wrapper">
+  <button class="login-lang" id="loginLangBtn" onclick="window.__loginLang && window.__loginLang()" title="اللغة">
+    <i class="fa-solid fa-language"></i> <span id="loginLangLabel">الإنجليزية</span>
+  </button>
+  <div class="login-card">
+    <div class="login-logo">
+      <img src="../assets/logo.png" alt="OW">
+      <p id="loginSubtitle">نظام إدارة المستودعات</p>
+    </div>
+    <div class="login-heading">
+      <h2 id="loginTitle">مرحباً بعودتك</h2>
+      <p id="loginDescription">سجّل الدخول لمتابعة المخزون والمعاملات بأمان.</p>
+    </div>
+    <form class="login-form" id="loginForm" onsubmit="window.__login(event)" novalidate>
+      <div class="field login-signup-only" id="loginNameField" style="display:none">
+        <label for="loginName" id="loginNameLabel">الاسم الكامل</label>
+        <div class="login-field">
+          <i class="fa-regular fa-user login-field-icon" aria-hidden="true"></i>
+          <input id="loginName" name="fullName" type="text" autocomplete="name" placeholder="الاسم الكامل">
+        </div>
+      </div>
+      <div class="field">
+        <label for="loginEmail" id="loginEmailLabel">البريد الإلكتروني</label>
+        <div class="login-field">
+          <i class="fa-regular fa-envelope login-field-icon" aria-hidden="true"></i>
+          <input id="loginEmail" name="email" type="email" required autocomplete="email" inputmode="email" spellcheck="false" placeholder="name@company.com">
+        </div>
+      </div>
+      <div class="field">
+        <label for="loginPassword" id="loginPasswordLabel">كلمة المرور</label>
+        <div class="login-field login-field-password">
+          <i class="fa-solid fa-lock login-field-icon" aria-hidden="true"></i>
+          <input id="loginPassword" name="password" type="password" required autocomplete="current-password" placeholder="••••••••">
+          <button type="button" class="login-password-toggle" id="loginPasswordToggle" onclick="window.__togglePassword && window.__togglePassword()" aria-label="إظهار كلمة المرور" aria-controls="loginPassword" aria-pressed="false" title="إظهار كلمة المرور">
+            <i class="fa-regular fa-eye" aria-hidden="true"></i>
+          </button>
+        </div>
+      </div>
+      <button type="submit" id="loginButton"><i class="fa-solid fa-right-to-bracket"></i> <span>تسجيل الدخول</span></button>
+      <button type="button" class="login-switch" id="loginSwitch" onclick="window.__toggleAuthMode()">ليس لديك حساب؟ إنشاء حساب</button>
+      <div id="authFeedback" class="login-info"></div>
+      <div id="authError" class="login-error"></div>
+      <p class="login-hint" id="loginHint">بعد أول تسجيل دخول ناجح، يمكنك الدخول دون اتصال على هذا الجهاز.</p>
+    </form>
+  </div>
+</div>
+
+<div id="appShell">
+  <header class="o_navbar" id="navbar"></header>
+  <div class="o_apps_panel" id="appsPanel"></div>
+  <div class="o_user_menu" id="userMenu"></div>
+  <nav class="o_menubar" id="menubar"></nav>
+  <main class="o_main" id="mainContent"></main>
+  <nav class="o_mobile_nav" id="mobileNav" aria-label="التنقل السريع"></nav>
+</div>
+
+<div id="modalRoot"></div>
+<div id="toastRoot" class="o_toast_stack"></div>
+
+<!-- Reuse the project's existing bootstrap dependencies and application entry point. -->
+<script src="../supabase-client.js"></script>
+<script src="../SQLite-db.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.13.0/sql-wasm.js" crossorigin="anonymous"></script>
+<script>
+  try { if (window.bootOptionalSQLite) bootOptionalSQLite(); }
+  catch (e) { console.warn('SQLite bootstrap skipped', e); }
+</script>
+<script src="../jsqr.js"></script>
+<script src="../qrcode-generator.js"></script>
+<script src="../qr-reader.js"></script>
+<script type="module" src="../main.js"></script>
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('../sw.js', { updateViaCache: 'none' })
+        .then(reg => reg.update().catch(() => {}))
+        .catch(() => {});
+    });
+  }
+</script>
+</body>
+</html>
