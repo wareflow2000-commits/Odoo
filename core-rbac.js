@@ -2,7 +2,7 @@
 // OW — role based access control (UI gate only; RLS is authoritative)
 // ============================================================================
 import { currentUser } from './core-auth.js';
-import { store, hasEffectiveCachedGrant } from './core-store.js';
+import { store, hasEffectiveCachedGrant, hasAnyEffectiveCachedGrant } from './core-store.js';
 
 export function role() { return String(currentUser()?.role || '').toUpperCase(); }
 export const isAdmin = () => role() === 'SUPER_ADMIN';
@@ -85,32 +85,46 @@ export function canViewSystemQty() {
   return canDatabasePermission('action:stocktake:view_system_qty');
 }
 
-export function canApproveTransactions() {
-  return canDatabasePermission('action:transaction:approve');
+export function canApproveTransactions(transaction = null) {
+  if (!transaction) return hasAnyEffectiveCachedGrant('action:transaction:approve');
+  return canDatabasePermission('action:transaction:approve', {
+    resource_type: 'transaction', resource_id: transaction.id,
+    warehouse_id: transaction.warehouse_id, owner_id: transaction.created_by,
+    status: transaction.status, transaction_type: transaction.transaction_type
+  });
 }
 
-export function canCreateTransactionType(type) {
+export function canCreateTransactionType(type, warehouseId = null) {
   const t = String(type || '').toUpperCase();
-  if (t === 'OPENING_BALANCE') {
-    return canDatabasePermission('action:transaction:opening_balance:create');
-  }
-  if (t === 'GRN' || t === 'RETURN_FROM_USAGE' || t === 'RETURN_FROM_CUSTOMER') {
-    return canDatabasePermission('action:transaction:grn:create');
-  }
-  if (t === 'ISSUE' || t === 'RETURN_TO_SUPPLIER') {
-    return canDatabasePermission('action:transaction:issue:create');
-  }
-  if (t === 'ADJUSTMENT_IN' || t === 'ADJUSTMENT_OUT') {
-    return canDatabasePermission('action:transaction:adjustment:create');
-  }
-  return false;
+  let key = null;
+  if (t === 'OPENING_BALANCE') key = 'action:transaction:opening_balance:create';
+  else if (t === 'GRN' || t === 'RETURN_FROM_USAGE' || t === 'RETURN_FROM_CUSTOMER') key = 'action:transaction:grn:create';
+  else if (t === 'ISSUE' || t === 'RETURN_TO_SUPPLIER') key = 'action:transaction:issue:create';
+  else if (t === 'ADJUSTMENT_IN' || t === 'ADJUSTMENT_OUT') key = 'action:transaction:adjustment:create';
+  if (!key) return false;
+  if (!warehouseId) return hasAnyEffectiveCachedGrant(key);
+  return canDatabasePermission(key, {
+    resource_type: 'transaction', warehouse_id: warehouseId,
+    owner_id: currentUser()?.id, transaction_type: t, offline: false
+  });
 }
 
-export function canManageStocktake() {
-  return [
+const stocktakeContext = session => session ? ({
+  resource_type: 'stocktake_session', resource_id: session.id,
+  warehouse_id: session.warehouse_id, owner_id: session.created_by,
+  status: session.status, review_status: session.review_status
+}) : null;
+
+export function canManageStocktake(session = null) {
+  const keys = [
     'action:stocktake:start', 'action:stocktake:count',
-    'action:stocktake:submit', 'action:stocktake:approve', 'action:stocktake:manage'
-  ].some(canDatabasePermission);
+    'action:stocktake:submit', 'action:stocktake:approve',
+    'action:stocktake:manage', 'action:stocktake:settle', 'action:stocktake:close'
+  ];
+  const context = stocktakeContext(session);
+  return keys.some(key => context
+    ? canDatabasePermission(key, context)
+    : hasAnyEffectiveCachedGrant(key));
 }
 
 export function canTransfer() {
@@ -119,15 +133,45 @@ export function canTransfer() {
     'action:stock_transfer:receive', 'action:stock_transfer:reject_receipt',
     'action:stock_transfer:return:create', 'action:stock_transfer:return:review',
     'action:stock_transfer:return:receive'
-  ].some(canDatabasePermission);
+  ].some(hasAnyEffectiveCachedGrant);
 }
 
-export const canCreateTransfer = () => canDatabasePermission('action:stock_transfer:create');
-export const canReceiveTransfer = () => canDatabasePermission('action:stock_transfer:receive');
-export const canRejectTransferReceipt = () => canDatabasePermission('action:stock_transfer:reject_receipt');
-export const canCreateTransferReturn = () => canDatabasePermission('action:stock_transfer:return:create');
-export const canReviewTransferReturn = () => canDatabasePermission('action:stock_transfer:return:review');
-export const canConfirmTransferReturn = () => canDatabasePermission('action:stock_transfer:return:receive');
+export const canCreateTransfer = (warehouseId = null) => warehouseId
+  ? canDatabasePermission('action:stock_transfer:create', {
+      resource_type: 'stock_transfer_order', warehouse_id: warehouseId,
+      owner_id: currentUser()?.id
+    })
+  : hasAnyEffectiveCachedGrant('action:stock_transfer:create');
+export const canReceiveTransfer = (warehouseId = null, transferId = null) => warehouseId
+  ? canDatabasePermission('action:stock_transfer:receive', {
+      resource_type: 'stock_transfer', resource_id: transferId,
+      warehouse_id: warehouseId, owner_id: currentUser()?.id
+    })
+  : hasAnyEffectiveCachedGrant('action:stock_transfer:receive');
+export const canRejectTransferReceipt = (warehouseId = null, transferId = null) => warehouseId
+  ? canDatabasePermission('action:stock_transfer:reject_receipt', {
+      resource_type: 'stock_transfer', resource_id: transferId,
+      warehouse_id: warehouseId, owner_id: currentUser()?.id
+    })
+  : hasAnyEffectiveCachedGrant('action:stock_transfer:reject_receipt');
+export const canCreateTransferReturn = (warehouseId = null, transferId = null) => warehouseId
+  ? canDatabasePermission('action:stock_transfer:return:create', {
+      resource_type: 'stock_transfer', resource_id: transferId,
+      warehouse_id: warehouseId, owner_id: currentUser()?.id
+    })
+  : hasAnyEffectiveCachedGrant('action:stock_transfer:return:create');
+export const canReviewTransferReturn = (warehouseId = null, transferId = null) => warehouseId
+  ? canDatabasePermission('action:stock_transfer:return:review', {
+      resource_type: 'stock_transfer', resource_id: transferId,
+      warehouse_id: warehouseId, owner_id: currentUser()?.id
+    })
+  : hasAnyEffectiveCachedGrant('action:stock_transfer:return:review');
+export const canConfirmTransferReturn = (warehouseId = null, transferId = null) => warehouseId
+  ? canDatabasePermission('action:stock_transfer:return:receive', {
+      resource_type: 'stock_transfer', resource_id: transferId,
+      warehouse_id: warehouseId, owner_id: currentUser()?.id
+    })
+  : hasAnyEffectiveCachedGrant('action:stock_transfer:return:receive');
 
 export function canAccessPage(page) {
   if (!currentUser() || !page) return false;
