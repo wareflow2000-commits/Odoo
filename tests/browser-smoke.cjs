@@ -71,12 +71,11 @@ const fs = require('fs');
       );
       const queueRows = queueKey ? JSON.parse(localStorage.getItem(queueKey)) : [];
 
-      const foreignSnapshotTest = true; // Run after the refresh persistence assertions, not before them.\n\n      return {
+      return {
         issueAllowed, receiptDenied, assignedWarehouseAllowed, otherWarehouseDenied,
         multiWarehouseDenied, countQueued: !!saved.pending_sync && queued,
         convertedBaseQuantity: saved.counted_qty,
-        queueOwnerMatches: queueRows.length === 1 && queueRows[0].user_id === userId,
-        foreignSnapshotRejected
+        queueOwnerMatches: queueRows.length === 1 && queueRows[0].user_id === userId
       };
     });
     const failedChecks = Object.entries(offlineChecks).filter(([key, value]) =>
