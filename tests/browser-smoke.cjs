@@ -302,23 +302,51 @@ const fs = require('fs');
 
     const warehouseScopeChecks = await page.evaluate(async () => {
       const { store, applyAccessFilter } = await import('/core-store.js');
-      const { accessibleWarehouseIds, canAccessWarehouse, canManageSystemSettings, canAdministerProfiles, canDatabasePermission } = await import('/core-rbac.js');
+      const {
+        accessibleWarehouseIds, canAccessWarehouse, canManageSystemSettings,
+        canAdministerProfiles, canDatabasePermission, can, canAccessPage,
+        canCreateTransactionType, canViewSystemQty, canApproveTransactions
+      } = await import('/core-rbac.js');
       const originalSession = window.__session;
+      const originalRolePermissions = store.data.role_permissions;
+      store.data.role_permissions = [];
       const roleContract = {};
       for (const role of ['SUPER_ADMIN', 'MANAGER', 'ADMIN', 'WAREHOUSE_MANAGER', 'CLERK']) {
         window.__session = { id: 'role-contract-test', role, profile: { role } };
         roleContract[role] = {
           profiles: canAdministerProfiles(),
           systemSettings: canManageSystemSettings(),
-          stocktakeStart: canDatabasePermission('action:stocktake:start')
+          stocktakeStart: canDatabasePermission('action:stocktake:start'),
+          issuePermission: can('action:transaction:issue:create'),
+          inventoryPage: canAccessPage('inventory'),
+          issueCreate: canCreateTransactionType('ISSUE'),
+          customerReturn: canCreateTransactionType('RETURN_FROM_CUSTOMER'),
+          supplierReturn: canCreateTransactionType('RETURN_TO_SUPPLIER'),
+          openingBalance: canCreateTransactionType('OPENING_BALANCE'),
+          systemQty: canViewSystemQty(),
+          approve: canApproveTransactions()
         };
       }
       window.__session = {
         id: 'role-contract-custom',
         role: 'WAREHOUSE_MANAGER',
-        profile: { role: 'WAREHOUSE_MANAGER', custom_permissions: ['action:stocktake:start'] }
+        profile: { role: 'WAREHOUSE_MANAGER', custom_permissions: [
+          'action:stocktake:start', 'action:transaction:issue:create',
+          'page:inventory:access', 'action:stocktake:view_system_qty',
+          'action:transaction:approve'
+        ] }
       };
-      const warehouseManagerExplicitGrant = canDatabasePermission('action:stocktake:start');
+      const warehouseManagerExplicitGrant = canDatabasePermission('action:stocktake:start')
+        && can('action:transaction:issue:create') && canAccessPage('inventory')
+        && canCreateTransactionType('ISSUE') && canViewSystemQty() && canApproveTransactions();
+      window.__session = {
+        id: 'role-contract-wildcard',
+        role: 'WAREHOUSE_MANAGER',
+        profile: { role: 'WAREHOUSE_MANAGER', custom_permissions: ['*'] }
+      };
+      const wildcardDoesNotBypassDatabase = !can('action:transaction:issue:create')
+        && !canAccessPage('inventory');
+      store.data.role_permissions = originalRolePermissions;
       window.__session = originalSession;
       const permissionRoleContract = roleContract.SUPER_ADMIN.profiles
         && roleContract.SUPER_ADMIN.systemSettings
@@ -326,12 +354,34 @@ const fs = require('fs');
         && !roleContract.ADMIN.profiles && !roleContract.ADMIN.systemSettings
         && !roleContract.WAREHOUSE_MANAGER.profiles && !roleContract.WAREHOUSE_MANAGER.systemSettings
         && !roleContract.CLERK.profiles && !roleContract.CLERK.systemSettings
-        && roleContract.SUPER_ADMIN.stocktakeStart
-        && roleContract.MANAGER.stocktakeStart
-        && roleContract.ADMIN.stocktakeStart
-        && !roleContract.WAREHOUSE_MANAGER.stocktakeStart
+        && roleContract.SUPER_ADMIN.stocktakeStart && roleContract.MANAGER.stocktakeStart
+        && roleContract.ADMIN.stocktakeStart && !roleContract.WAREHOUSE_MANAGER.stocktakeStart
         && !roleContract.CLERK.stocktakeStart
-        && warehouseManagerExplicitGrant;
+        && roleContract.SUPER_ADMIN.issuePermission && roleContract.MANAGER.issuePermission
+        && roleContract.ADMIN.issuePermission && !roleContract.WAREHOUSE_MANAGER.issuePermission
+        && !roleContract.CLERK.issuePermission
+        && roleContract.SUPER_ADMIN.inventoryPage && roleContract.MANAGER.inventoryPage
+        && roleContract.ADMIN.inventoryPage && !roleContract.WAREHOUSE_MANAGER.inventoryPage
+        && !roleContract.CLERK.inventoryPage
+        && roleContract.SUPER_ADMIN.issueCreate && roleContract.MANAGER.issueCreate
+        && roleContract.ADMIN.issueCreate && !roleContract.WAREHOUSE_MANAGER.issueCreate
+        && !roleContract.CLERK.issueCreate
+        && roleContract.SUPER_ADMIN.customerReturn && roleContract.MANAGER.customerReturn
+        && roleContract.ADMIN.customerReturn && !roleContract.WAREHOUSE_MANAGER.customerReturn
+        && !roleContract.CLERK.customerReturn
+        && roleContract.SUPER_ADMIN.supplierReturn && roleContract.MANAGER.supplierReturn
+        && roleContract.ADMIN.supplierReturn && !roleContract.WAREHOUSE_MANAGER.supplierReturn
+        && !roleContract.CLERK.supplierReturn
+        && roleContract.SUPER_ADMIN.openingBalance && roleContract.MANAGER.openingBalance
+        && !roleContract.ADMIN.openingBalance && !roleContract.WAREHOUSE_MANAGER.openingBalance
+        && !roleContract.CLERK.openingBalance
+        && roleContract.SUPER_ADMIN.systemQty && roleContract.MANAGER.systemQty
+        && roleContract.ADMIN.systemQty && !roleContract.WAREHOUSE_MANAGER.systemQty
+        && !roleContract.CLERK.systemQty
+        && roleContract.SUPER_ADMIN.approve && roleContract.MANAGER.approve
+        && roleContract.ADMIN.approve && !roleContract.WAREHOUSE_MANAGER.approve
+        && !roleContract.CLERK.approve
+        && warehouseManagerExplicitGrant && wildcardDoesNotBypassDatabase;
       const w1 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
       const w2 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2';
       const w3 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3';
