@@ -257,10 +257,11 @@ const fs = require('fs');
       window.__session.offline = false;
       const conflictResult = await syncAll();
       const queueAfterConflict = JSON.parse(localStorage.getItem('orshap_stocktake_count_queue_v1:' + userId) || '[]');
+      const callsAfterConflict = countRpcCalls;
       const factorConflict = conflictResult.conflicts === 1
         && queueAfterConflict.length === 1
         && queueAfterConflict[0].status === 'CONFLICT'
-        && countRpcCalls === 0;
+        && callsAfterConflict === 0;
 
       currentFactor = 10;
       store.data.item_unit_conversions = [{ item_id: itemId, unit_code: 'BOX', factor_to_base: 10 }];
@@ -289,11 +290,11 @@ const fs = require('fs');
       return { factorConflict, reenteredWithCorrectFactor, firstSyncOnce, secondSyncIdempotent,
         conflictResult: { conflicts: conflictResult.conflicts, pending: conflictResult.pending, stocktakeCounts: conflictResult.stocktakeCounts },
         queueAfterConflict: queueAfterConflict.map(row => ({ status: row.status, attempts: row.attempts, last_error: row.last_error, factor: row.conversion_factor })),
-        callsAfterConflict: countRpcCalls,
+        callsAfterConflict,
         countRpcCalls, firstSyncCount: firstSync.stocktakeCounts, secondSyncCount: secondSync.stocktakeCounts };
     });
     const syncFailures = Object.entries(syncChecks).filter(([key, value]) =>
-      !['countRpcCalls', 'firstSyncCount', 'secondSyncCount'].includes(key) && value !== true
+      !['conflictResult', 'queueAfterConflict', 'callsAfterConflict', 'countRpcCalls', 'firstSyncCount', 'secondSyncCount'].includes(key) && value !== true
     );
     if (syncFailures.length) throw new Error('Stocktake sync checks failed: ' + JSON.stringify(syncChecks));
 
