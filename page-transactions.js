@@ -88,6 +88,12 @@ function availableQty(itemId, shelfId, batchNo = null) {
 }
 
 function rowHtml(t) {
+  const pending = ['PENDING_APPROVAL', 'PENDING'].includes(t.status);
+  const approveAllowed = pending && canApproveTransactions(t);
+  const rejectAllowed = pending && canDatabasePermission('action:transaction:reject', {
+    resource_type: 'transaction', resource_id: t.id, warehouse_id: t.warehouse_id,
+    owner_id: t.created_by, status: t.status, transaction_type: t.transaction_type
+  });
   return `<tr>
     <td><span class="o_cell_main">${escHtml(t.reference_no || '—')}</span>
       ${t.external_reference ? `<div class="o_cell_sub">${escHtml(t.external_reference)}</div>` : ''}</td>
@@ -100,9 +106,8 @@ function rowHtml(t) {
     <td><div class="o_actions_cell">
       <button class="o_btn o_btn_ghost o_btn_sm" data-view="${escHtml(t.id)}" title="${tx('تفاصيل', 'Details')}"><i class="fa-solid fa-eye"></i></button>
       <button class="o_btn o_btn_ghost o_btn_sm" data-print="${escHtml(t.id)}" title="${tx('طباعة', 'Print')}"><i class="fa-solid fa-print"></i></button>
-      ${canApproveTransactions() && ['PENDING_APPROVAL', 'PENDING'].includes(t.status)
-        ? `<button class="o_btn o_btn_success o_btn_sm" data-approve="${escHtml(t.id)}">${tx('اعتماد', 'Approve')}</button>
-           <button class="o_btn o_btn_danger o_btn_sm" data-reject="${escHtml(t.id)}">${tx('رفض', 'Reject')}</button>` : ''}
+      ${approveAllowed ? `<button class="o_btn o_btn_success o_btn_sm" data-approve="${escHtml(t.id)}">${tx('اعتماد', 'Approve')}</button>` : ''}
+      ${rejectAllowed ? `<button class="o_btn o_btn_danger o_btn_sm" data-reject="${escHtml(t.id)}">${tx('رفض', 'Reject')}</button>` : ''}
     </div></td>
   </tr>`;
 }
@@ -834,7 +839,6 @@ function openTransaction(id) {
     resource_type: 'transaction', resource_id: t.id, warehouse_id: t.warehouse_id,
     owner_id: t.created_by, status: t.status, transaction_type: t.transaction_type
   }) && ['PENDING_APPROVAL', 'PENDING'].includes(t.status);
-  const canAct = canApprove || canReject;
   const body = `<div class="o_detail_head">
       <div><span class="o_detail_ref">${escHtml(t.reference_no || '—')}</span> ${statusBadge(t.status, statusLabel(t.status))}</div>
       <div class="o_detail_type">${txLabel(t.transaction_type)}</div>
@@ -896,6 +900,7 @@ function openTransaction(id) {
 async function doApprove(id) {
   const t = store.byId('transactions', id);
   if (!t) return;
+  if (!canApproveTransactions(t)) return toast(tx('لا تملك تفويض اعتماد هذا السند.', 'You do not have an approval grant for this voucher.'), 'error');
   const ok = await confirmDialog({
     title: tx('اعتماد السند', 'Approve voucher'),
     message: `${t.reference_no || ''} — ${tx('سيتم ترحيل الكميات إلى المخزون.', 'Quantities will be posted to stock.')}`,
@@ -910,6 +915,12 @@ async function doApprove(id) {
 }
 
 async function doReject(id) {
+  const t = store.byId('transactions', id);
+  if (!t) return;
+  if (!canDatabasePermission('action:transaction:reject', {
+    resource_type: 'transaction', resource_id: t.id, warehouse_id: t.warehouse_id,
+    owner_id: t.created_by, status: t.status, transaction_type: t.transaction_type
+  })) return toast(tx('لا تملك تفويض رفض هذا السند.', 'You do not have a rejection grant for this voucher.'), 'error');
   const reason = await promptDialog({
     title: tx('رفض السند', 'Reject voucher'),
     label: tx('سبب الرفض', 'Rejection reason'),
