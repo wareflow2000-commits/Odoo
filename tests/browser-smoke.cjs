@@ -382,7 +382,7 @@ const fs = require('fs');
         },
         async rpc(name, args) {
           if (name === 'list_stocktake_lines_secure') return { data: store.data.stocktake_lines, error: null };
-          if (name === 'save_stocktake_count_v3') {
+          if (name === 'save_offline_stocktake_count') {
             countRpcCalls++;
             rpcArgs.push(args);
             const line = store.data.stocktake_lines.find(x => x.id === args.p_line_id);
