@@ -5,7 +5,7 @@ import { OW } from './core-registry.js';
 import { tx, toggleLang } from './core-i18n.js';
 import { pageHead, card, table, empty, badge, btn, alertBox, input, field } from './core-ui.js';
 import { store, updateRow, pullAll, warehouseName } from './core-store.js';
-import { rolePermissions, customPermissions, isElevated, role, canAccessWarehouse } from './core-rbac.js';
+import { rolePermissions, customPermissions, role, accessibleWarehouseIds } from './core-rbac.js';
 import { roleLabel, fmtDateTime, fmtNum, initials, statusLabel, permissionLabel, permissionDescription } from './core-utils.js';
 import { toast } from './core-toast.js';
 import { modal, confirmDialog } from './core-modal.js';
@@ -20,10 +20,10 @@ function render() {
   const user = window.__session || {};
   const roleKey = role();
   const perms = [...new Set([...rolePermissions(), ...customPermissions()])].sort();
-  const assigned = Array.isArray(p.assigned_warehouse_ids) ? p.assigned_warehouse_ids : [];
-  const warehouses = isElevated()
+  const accessible = accessibleWarehouseIds();
+  const warehouses = accessible === null
     ? store.get('warehouses')
-    : store.get('warehouses').filter(w => assigned.includes(w.id));
+    : store.get('warehouses').filter(w => accessible.includes(w.id));
   const activity = store.get('audit_logs')
     .filter(a => a.user_id === user.id)
     .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
@@ -67,7 +67,7 @@ function render() {
       ${card(`<i class="fa-solid fa-warehouse"></i> ${tx('المستودعات المتاحة', 'Accessible warehouses')}`,
         warehouses.length
           ? `<div class="o_chip_list">${warehouses.map(w => `<span class="o_chip"><i class="fa-solid fa-warehouse"></i> ${w.code} — ${w.name}</span>`).join('')}</div>
-             ${isElevated() ? `<p class="o_hint">${tx('دورك يمنحك الوصول إلى كل المستودعات.', 'Your role grants access to every warehouse.')}</p>` : ''}`
+             ${accessible === null ? `<p class="o_hint">${tx('دورك يمنحك الوصول إلى كل المستودعات.', 'Your role grants access to every warehouse.')}</p>` : ''}`
           : alertBox(tx('لم يُعيَّن لك أي مستودع — تواصل مع مدير النظام.',
             'No warehouse assigned to you — contact your administrator.'), 'warning'),
         `<span class="o_muted">${fmtNum(warehouses.length)}</span>`)}
