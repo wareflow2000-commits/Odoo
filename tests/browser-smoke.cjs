@@ -94,6 +94,15 @@ const fs = require('fs');
       const multiWarehouseDenied = !offlineWarehouseAllowed(warehouseId);
       window.__session.profile.assigned_warehouse_ids = [warehouseId];
       const originalAuthorizationPermissions = store.authorizationPermissions;
+      const originalAuthorizationGrantRows = store.authorizationGrantRows;
+      const originalAuthorizationGrantRowsUserId = store.authorizationGrantRowsUserId;
+      store.authorizationGrantRows = [{
+        id: 'offline-count-grant', subject_type: 'USER', permission_key: 'action:stocktake:count',
+        effect: 'ALLOW', resource_type: 'stocktake_session', resource_id: sessionId,
+        warehouse_id: warehouseId, scope_type: 'WAREHOUSE', conditions: { offline: true },
+        valid_from: new Date(Date.now() - 60000).toISOString(), valid_until: null
+      }];
+      store.authorizationGrantRowsUserId = window.__session.id;
       store.authorizationPermissions = ['action:stocktake:count'];
       const saved = await saveStocktakeCount(lineId, 2, 'BOX');
       // Session creation and count execution are separate grants. Neither
@@ -107,6 +116,8 @@ const fs = require('fs');
       const countQueueSnapshot = countQueueKey ? localStorage.getItem(countQueueKey) : null;
       store.data.stocktake_sessions[0].created_by = '88888888-8888-4888-8888-888888888888';
       store.authorizationPermissions = [];
+      store.authorizationGrantRows = [];
+      store.authorizationGrantRowsUserId = window.__session.id;
       window.__session.role = 'ADMIN';
       const adminCannotCountWithoutGrant = await expectBlocked(() => saveStocktakeCount(lineId, 3, 'BOX'));
       window.__session.role = 'MANAGER';
@@ -114,11 +125,19 @@ const fs = require('fs');
       window.__session.role = 'WAREHOUSE_MANAGER';
       const warehouseManagerCannotCountWithoutGrant = await expectBlocked(() => saveStocktakeCount(lineId, 3, 'BOX'));
       store.authorizationPermissions = ['action:stocktake:count'];
+      store.authorizationGrantRows = [{
+        id: 'delegated-count-grant', subject_type: 'USER', permission_key: 'action:stocktake:count',
+        effect: 'ALLOW', resource_type: 'stocktake_session', resource_id: sessionId,
+        warehouse_id: warehouseId, scope_type: 'WAREHOUSE', conditions: { offline: true },
+        valid_from: new Date(Date.now() - 60000).toISOString(), valid_until: null
+      }];
       const delegatedCounterAllowed = await saveStocktakeCount(lineId, 4, 'BOX');
       store.data.stocktake_sessions[0].created_by = originalCreator;
       Object.assign(store.data.stocktake_lines[0], originalCountLine);
       window.__session.role = originalRole;
       store.authorizationPermissions = originalAuthorizationPermissions;
+      store.authorizationGrantRows = originalAuthorizationGrantRows;
+      store.authorizationGrantRowsUserId = originalAuthorizationGrantRowsUserId;
       if (countCacheSnapshot !== null) localStorage.setItem('orshap_wms_data_v5', countCacheSnapshot);
       if (countQueueKey && countQueueSnapshot !== null) localStorage.setItem(countQueueKey, countQueueSnapshot);
       const queued = queueSnapshot().some(row =>
@@ -359,6 +378,13 @@ const fs = require('fs');
         id: userId, role: 'CLERK', offline: true,
         profile: { id: userId, assigned_warehouse_ids: [warehouseId], accessible_warehouse_ids: [warehouseId] }
       };
+      store.authorizationGrantRows = [{
+        id: 'sync-count-grant', subject_type: 'USER', permission_key: 'action:stocktake:count',
+        effect: 'ALLOW', resource_type: 'stocktake_session', resource_id: sessionId,
+        warehouse_id: warehouseId, scope_type: 'WAREHOUSE', conditions: { offline: true },
+        valid_from: new Date(Date.now() - 60000).toISOString(), valid_until: null
+      }];
+      store.authorizationGrantRowsUserId = userId;
       store.authorizationPermissions = ['action:stocktake:count'];
       store.authorizationPermissionsUserId = userId;
       Object.defineProperty(navigator, 'onLine', { configurable: true, value: false });
