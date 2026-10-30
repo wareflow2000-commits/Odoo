@@ -54,7 +54,9 @@ export function orshapCanPermission(key) { return can(key); }
 
 export function accessibleWarehouseIds() {
   const u = currentUser();
-  if (!u || store.scopeConfigLoaded !== true) return [];
+  if (!u) return [];
+  if (role() === 'SUPER_ADMIN') return null;
+  if (store.scopeConfigLoaded !== true) return [];
   const assigned = Array.isArray(u.profile?.assigned_warehouse_ids)
     ? [...new Set(u.profile.assigned_warehouse_ids.filter(Boolean))] : [];
   const roleScope = store.get('role_warehouse_scopes').find(row =>
