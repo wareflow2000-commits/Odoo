@@ -47,7 +47,7 @@ export const TABLES = [
   'stock_transfers', 'stock_transfer_orders',
   'inventory_ledger', 'transaction_ledger', 'transaction_audit',
   'audit_logs', 'system_settings', 'profiles', 'permissions',
-  'role_permissions', 'archive_movements', 'archive_balances', 'sync_log'
+  'role_permissions', 'role_warehouse_scopes', 'archive_movements', 'archive_balances', 'sync_log'
 ];
 
 // Tables that can be edited offline and replayed later (no stock/financial impact).
@@ -101,10 +101,14 @@ export function offlineWarehouseAllowed(warehouseId) {
     : (cachedProfile || {});
   const assigned = [...new Set((profile.assigned_warehouse_ids || []).filter(Boolean))];
   if (assigned.length !== 1 || assigned[0] !== warehouseId) return false;
-  const accessible = Array.isArray(profile.accessible_warehouse_ids)
-    ? profile.accessible_warehouse_ids
-    : null;
-  return !accessible || accessible.includes(warehouseId);
+  const roleScope = store.get('role_warehouse_scopes').find(row =>
+    String(row.role_name || '').toUpperCase() === String(session.role || '').toUpperCase()
+  ) || profile.role_warehouse_scope || null;
+  const mode = String(roleScope?.scope_mode || 'INHERIT').toUpperCase();
+  const roleIds = Array.isArray(roleScope?.warehouse_ids) ? roleScope.warehouse_ids : [];
+  if (mode === 'SELECTED' && !roleIds.includes(warehouseId)) return false;
+  if (mode === 'ALL' || mode === 'SELECTED') return true;
+  return ['SUPER_ADMIN', 'ADMIN'].includes(String(session.role || '').toUpperCase());
 }
 
 /* ── local persistence ──────────────────────────────────────────────────── */
@@ -265,6 +269,7 @@ export async function pullAll({ silent = false } = {}) {
     applyMasterOverlay();
     applyOutboxOverlay();
     applyStocktakeCountOverlay();
+    applyAccessFilter();
     store.loaded = true;
     return store.data;
   }
@@ -337,58 +342,63 @@ export async function pullAll({ silent = false } = {}) {
   }
 }
 
-function applyAccessFilter() {
+export function applyAccessFilter() {
   const user = window.__session;
-  const elevated = isElevated();
-  const assigned = Array.isArray(user?.profile?.assigned_warehouse_ids)
+  if (!user?.id) return;
+
+  const roleName = String(user.role || user.profile?.role || '').toUpperCase();
+  const assigned = Array.isArray(user.profile?.assigned_warehouse_ids)
     ? [...new Set(user.profile.assigned_warehouse_ids.filter(Boolean))] : [];
-  store.noWarehouseAccess = !elevated && assigned.length === 0;
+  const roleScope = store.get('role_warehouse_scopes').find(row =>
+    String(row.role_name || '').toUpperCase() === roleName
+  ) || user.profile?.role_warehouse_scope || null;
+  const mode = String(roleScope?.scope_mode || 'INHERIT').toUpperCase();
+  const roleIds = Array.isArray(roleScope?.warehouse_ids) ? roleScope.warehouse_ids : [];
 
-  // Explicit user assignments restrict every role, including managers. This
-  // mirrors current_user_can_access_warehouse(), where a user-level list is
-  // always an additional restriction even when the role is otherwise elevated.
-  if (assigned.length > 0) {
-    const allow = new Set(assigned);
-    store.data.warehouses = store.get('warehouses').filter(w => allow.has(w.id));
-    store.data.zones = store.get('zones').filter(z => allow.has(z.warehouse_id));
-    store.data.storage_areas = store.get('storage_areas').filter(a => allow.has(a.warehouse_id));
-    store.data.warehouse_storage_areas = store.get('warehouse_storage_areas').filter(a => allow.has(a.warehouse_id));
-    store.data.sections = store.get('sections').filter(x => allow.has(x.warehouse_id));
-    store.data.shelves = store.get('shelves').filter(x => allow.has(x.warehouse_id));
-    const shelfIds = new Set(store.data.shelves.map(x => x.id));
-    store.data.stock = store.get('stock').filter(x => shelfIds.has(x.shelf_id));
-    const txIds = new Set(store.get('transactions').filter(x => allow.has(x.warehouse_id)).map(x => x.id));
-    store.data.transactions = store.get('transactions').filter(x => txIds.has(x.id));
-    store.data.transaction_lines = store.get('transaction_lines').filter(x => txIds.has(x.transaction_id));
-    const sessionIds = new Set(store.get('stocktake_sessions').filter(x => allow.has(x.warehouse_id)).map(x => x.id));
-    store.data.stocktake_sessions = store.get('stocktake_sessions').filter(x => sessionIds.has(x.id));
-    store.data.stocktake_lines = store.get('stocktake_lines').filter(x => sessionIds.has(x.session_id));
-    store.data.stocktake_logs = store.get('stocktake_logs').filter(x => sessionIds.has(x.session_id));
-    store.data.stock_transfers = store.get('stock_transfers').filter(x => allow.has(x.source_warehouse_id) || allow.has(x.destination_warehouse_id));
-    store.data.stock_transfer_orders = store.get('stock_transfer_orders').filter(x => allow.has(x.source_warehouse_id) || allow.has(x.destination_warehouse_id));
-    for (const t of ['inventory_ledger', 'transaction_ledger', 'transaction_audit', 'archive_movements', 'archive_balances', 'audit_logs', 'sync_log']) {
-      store.data[t] = store.get(t).filter(x => !!x.warehouse_id && allow.has(x.warehouse_id));
+  // Match current_user_can_access_warehouse(): user assignment is a restriction,
+  // and SELECTED role scope intersects with that assignment.
+  let allowedIds = null;
+  if (assigned.length) {
+    allowedIds = new Set(assigned);
+    if (mode === 'SELECTED') {
+      const selected = new Set(roleIds);
+      allowedIds = new Set([...allowedIds].filter(id => selected.has(id)));
     }
-    enrichAll();
-    return;
+  } else if (mode === 'SELECTED') {
+    allowedIds = new Set(roleIds);
+  } else if (mode === 'ALL') {
+    allowedIds = null;
+  } else if (['SUPER_ADMIN', 'ADMIN'].includes(roleName)) {
+    allowedIds = null; // legacy admin-wide access only for INHERIT
+  } else {
+    allowedIds = new Set();
   }
 
-  // A non-elevated account with no warehouse scope must not retain warehouse,
-  // movement, audit, or balance data from a previously hydrated local snapshot.
-  // Global item/unit/category catalog data is intentionally kept available.
-  if (!elevated && assigned.length === 0) {
-    for (const t of [
-      'warehouses', 'zones', 'storage_areas', 'warehouse_storage_areas',
-      'sections', 'shelves', 'stock', 'transactions', 'transaction_lines',
-      'stocktake_sessions', 'stocktake_lines', 'stocktake_logs',
-      'stock_transfers', 'stock_transfer_orders', 'inventory_ledger',
-      'transaction_ledger', 'transaction_audit', 'audit_logs',
-      'archive_movements', 'archive_balances', 'sync_log'
-    ]) store.data[t] = [];
-    enrichAll();
-    return;
+  store.noWarehouseAccess = allowedIds !== null && allowedIds.size === 0;
+  if (allowedIds === null) return;
+
+  const allow = allowedIds;
+  store.data.warehouses = store.get('warehouses').filter(w => allow.has(w.id));
+  store.data.zones = store.get('zones').filter(z => allow.has(z.warehouse_id));
+  store.data.storage_areas = store.get('storage_areas').filter(a => allow.has(a.warehouse_id));
+  store.data.warehouse_storage_areas = store.get('warehouse_storage_areas').filter(a => allow.has(a.warehouse_id));
+  store.data.sections = store.get('sections').filter(x => allow.has(x.warehouse_id));
+  store.data.shelves = store.get('shelves').filter(x => allow.has(x.warehouse_id));
+  const shelfIds = new Set(store.data.shelves.map(x => x.id));
+  store.data.stock = store.get('stock').filter(x => shelfIds.has(x.shelf_id));
+  const txIds = new Set(store.get('transactions').filter(x => allow.has(x.warehouse_id)).map(x => x.id));
+  store.data.transactions = store.get('transactions').filter(x => txIds.has(x.id));
+  store.data.transaction_lines = store.get('transaction_lines').filter(x => txIds.has(x.transaction_id));
+  const sessionIds = new Set(store.get('stocktake_sessions').filter(x => allow.has(x.warehouse_id)).map(x => x.id));
+  store.data.stocktake_sessions = store.get('stocktake_sessions').filter(x => sessionIds.has(x.id));
+  store.data.stocktake_lines = store.get('stocktake_lines').filter(x => sessionIds.has(x.session_id));
+  store.data.stocktake_logs = store.get('stocktake_logs').filter(x => sessionIds.has(x.session_id));
+  store.data.stock_transfers = store.get('stock_transfers').filter(x => allow.has(x.source_warehouse_id) || allow.has(x.destination_warehouse_id));
+  store.data.stock_transfer_orders = store.get('stock_transfer_orders').filter(x => allow.has(x.source_warehouse_id) || allow.has(x.destination_warehouse_id));
+  for (const t of ['inventory_ledger', 'transaction_ledger', 'transaction_audit', 'archive_movements', 'archive_balances', 'audit_logs', 'sync_log']) {
+    store.data[t] = store.get(t).filter(x => !!x.warehouse_id && allow.has(x.warehouse_id));
   }
-  if (elevated) return;
+  enrichAll();
 }
 
 /* ── offline master queue ───────────────────────────────────────────────── */
