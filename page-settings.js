@@ -3,7 +3,7 @@
 // ----------------------------------------------------------------------------
 // General system flags, users & roles, permission matrix, units/conversions,
 // item categories, local cache tools, and live server snapshot / restore.
-// All writes go through the store → Supabase (or the offline master queue).
+// All writes go through guarded store mutations and require a live server connection.
 // ============================================================================
 import { OW } from './core-registry.js';
 import { tx, friendlyError } from './core-i18n.js';
@@ -248,6 +248,7 @@ function render() {
 
 function renderGeneral(banned) {
   const q = queueSnapshot();
+  const canWrite = !banned && navigator.onLine && !window.__session?.offline;
   return `
     <div class="o_grid" style="grid-template-columns:1.4fr 1fr">
       ${card(`<i class="fa-solid fa-sliders"></i> ${tx('أعلام النظام', 'System flags')}`,
@@ -258,14 +259,14 @@ function renderGeneral(banned) {
               <div><b>${f.ar[0] && (tx(f.ar[0], f.ar[1]))}</b>
                 <p>${tx(f.descAr, f.descEn)}</p></div>
               <label class="o_switch">
-                <input type="checkbox" data-flag="${f.key}" ${on ? 'checked' : ''} ${banned ? 'disabled' : ''}>
+                <input type="checkbox" data-flag="${f.key}" ${on ? 'checked' : ''} ${canWrite ? '' : 'disabled'}>
                 <span class="o_switch_slider"></span>
               </label>
             </div>`;
           }).join('')}
         </div>
-        <p class="o_hint" style="margin-top:10px">${tx('تُحفظ الأعلام فورًا وتعمل دون اتصال عبر قائمة المزامنة.',
-          'Flags save immediately and queue offline through the master queue.')}</p>`)}
+        <p class="o_hint" style="margin-top:10px">${tx('تعديل أعلام النظام يتطلب اتصالًا مباشرًا بالخادم.',
+          'System flag changes require a live server connection.')}</p>`)}
       ${card(`<i class="fa-solid fa-heart-pulse"></i> ${tx('حالة النظام', 'System health')}`,
         `<dl class="o_kv">
           <dt>${tx('المستخدم', 'User')}</dt><dd>${window.__session?.name || '—'}</dd>
@@ -854,6 +855,10 @@ async function applyImport() {
     toast(tx('ليست لديك صلاحية استيراد البيانات.', 'You do not have permission to import data.'), 'error');
     return;
   }
+  if (!navigator.onLine || window.__session?.offline) {
+    toast(tx('استيراد البيانات يتطلب اتصالًا مباشرًا بالخادم.', 'Data import requires a live server connection.'), 'warning');
+    return;
+  }
 
   const source = x.rows.map((row, idx) => {
     const r = { _row: idx + 2 };
@@ -978,6 +983,7 @@ function renderImport(banned) {
   const mappedCount = fields.filter(f => x.mapping[f.key]).length;
   const missing = fields.filter(f => f.required && !x.mapping[f.key]);
   const can = !banned;
+  const canWrite = can && navigator.onLine && !window.__session?.offline;
   const previewHeaders = x.headers.slice(0, 8);
   const previewRows = x.rows.slice(0, 5);
 
@@ -998,6 +1004,8 @@ function renderImport(banned) {
 
     ${banned ? alertBox(tx('ليست لديك صلاحية استيراد البيانات. العرض للقراءة فقط.',
       'You do not have permission to import data. Read-only view.'), 'warning') : ''}
+    ${!banned && !canWrite ? alertBox(tx('يمكن تجهيز الملف وربط الأعمدة دون اتصال، لكن حفظ البيانات يتطلب اتصالًا مباشرًا بالخادم.',
+      'You can prepare the file and map columns offline, but saving requires a live server connection.'), 'warning') : ''}
 
     <div class="o_import_entities">
       ${Object.entries(IMPORT_ENTITIES).map(([key, entity]) => `<button type="button"
@@ -1112,7 +1120,7 @@ function renderImport(banned) {
         <div class="o_import_footer">
           <span class="o_muted">${fmtNum(x.rows.length)} ${tx('صف جاهز', 'rows ready')} · <span id="importMappedFooter">${mappedCount} ${tx('حقل مربوط', 'fields mapped')}</span></span>
           <button type="button" class="o_btn o_btn_primary" id="importApply" onclick="OW.wms.importApply()"
-            ${can && !missing.length && !x.busy ? '' : 'disabled'}>
+            ${canWrite && !missing.length && !x.busy ? '' : 'disabled'}>
             ${x.busy ? '<span class="o_spinner" style="width:14px;height:14px;border-width:2px"></span>' : '<i class="fa-solid fa-file-import"></i>'}
             ${x.busy ? tx('جارٍ الاستيراد…', 'Importing…') : tx('استيراد البيانات', 'Import data')}
           </button>
