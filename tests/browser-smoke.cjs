@@ -114,7 +114,7 @@ const fs = require('fs');
       // snapshot and its pending count overlay. This uses a mocked transport:
       // no Supabase write or production inventory mutation is possible.
       const { pullAll } = await import('/core-store.js');
-      const cachedWarehouse = { id: 'cached-warehouse-sentinel', name: 'cached warehouse' };
+      const cachedWarehouse = { id: '22222222-2222-4222-8222-222222222222', name: 'cached warehouse sentinel' };
       store.data.warehouses = [cachedWarehouse];
       store.loaded = true;
       window.__session.offline = false;
@@ -153,6 +153,7 @@ const fs = require('fs');
         pullFailedAsExpected
         && store.data.warehouses.length === 1
         && store.data.warehouses[0].id === cachedWarehouse.id
+        && store.data.warehouses[0].name === cachedWarehouse.name
         && lineAfterFailedPull?.counted_qty === 24
         && queueSnapshot().some(row => row.source === 'stocktake' && row.status === 'PENDING');
 
