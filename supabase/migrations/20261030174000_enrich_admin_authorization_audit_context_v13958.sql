@@ -15,7 +15,7 @@ BEGIN
       ''requested_role'',p_role,
       ''requested_status'',p_status,
       ''requested_can_approve_without_workflow'',p_can_approve_without_workflow,
-      ''requested_assigned_warehouse_ids'',to_jsonb(COALESCE(p_assigned_warehouse_ids,ARRAY[]::uuid[]))
+      ''requested_assigned_warehouse_ids'',to_jsonb(p_assigned_warehouse_ids)
     )';
   IF position(new_fragment IN d)=0 THEN
     IF position(old_fragment IN d)=0 THEN RAISE EXCEPTION 'admin_update_profile audit context mismatch'; END IF;
