@@ -141,6 +141,7 @@ const fs = require('fs');
         legacyMasterQuarantined, legacyQueueBlocksFurtherOfflineWork, noOptimisticMasterWrite,
         countQueued: !!saved.pending_sync && queued,
         adminCannotCountAnotherUsersSession,
+        managerCannotCountAnotherUsersSession,
         warehouseManagerCannotCountAnotherUsersSession,
         convertedBaseQuantity: saved.counted_qty,
         queueOwnerMatches: queueRows.length === 1 && queueRows[0].user_id === userId
