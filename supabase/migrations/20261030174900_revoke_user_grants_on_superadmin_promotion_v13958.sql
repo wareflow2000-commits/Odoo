@@ -30,6 +30,18 @@ FOR EACH ROW
 WHEN (OLD.role IS DISTINCT FROM NEW.role AND NEW.role = 'SUPER_ADMIN')
 EXECUTE FUNCTION public.revoke_user_authorization_grants_on_superadmin_promotion();
 
+-- Clean up any legacy user grants that predate the non-SUPER_ADMIN subject guard.
+-- The existing grant-audit trigger records each revocation with the explicit reason.
+UPDATE public.authorization_grants g
+   SET revoked_at = now(),
+       revoked_by = NULL,
+       revocation_reason = 'Revoked by authorization hardening because the subject is SUPER_ADMIN'
+  FROM public.profiles p
+ WHERE g.subject_type = 'USER'
+   AND g.user_id = p.id
+   AND p.role = 'SUPER_ADMIN'
+   AND g.revoked_at IS NULL;
+
 DO $migration$
 DECLARE
   v_definition text;
@@ -96,6 +108,17 @@ BEGIN
      OR position('UPDATE OF role' IN v_trigger_definition) = 0
      OR position('SUPER_ADMIN' IN v_trigger_definition) = 0 THEN
     RAISE EXCEPTION 'SUPER_ADMIN promotion grant-revocation trigger verification failed';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM public.authorization_grants g
+    JOIN public.profiles p ON p.id = g.user_id
+    WHERE g.subject_type = 'USER'
+      AND p.role = 'SUPER_ADMIN'
+      AND g.revoked_at IS NULL
+  ) THEN
+    RAISE EXCEPTION 'Active user grants remain assigned to SUPER_ADMIN profiles';
   END IF;
 END;
 $verify$;
