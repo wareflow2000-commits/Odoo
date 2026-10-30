@@ -5,8 +5,8 @@ import { currentUser } from './core-auth.js';
 import { store, ELEVATED_ROLES } from './core-store.js';
 
 export function role() { return String(currentUser()?.role || '').toUpperCase(); }
-export const isAdmin = () => ['SUPER_ADMIN', 'ADMIN'].includes(role());
-export const isElevated = () => ELEVATED_ROLES.includes(role());
+export const isAdmin = () => role() === 'SUPER_ADMIN';
+export const isElevated = () => role() === 'SUPER_ADMIN';
 
 export function customPermissions() {
   const list = currentUser()?.profile?.custom_permissions;
@@ -37,11 +37,11 @@ export function can(permissionKey) {
   return canDatabasePermission(permissionKey);
 }
 
-// Mirrors public.current_user_has_permission(): SUPER_ADMIN, MANAGER and ADMIN
-// are database-level permission bypass roles; WAREHOUSE_MANAGER is not.
+// Only SUPER_ADMIN has the audited break-glass bypass. Every other role,
+ // including MANAGER and ADMIN, must hold an explicit role/user grant.
 export function canDatabasePermission(permissionKey) {
   if (!currentUser()) return false;
-  if (['SUPER_ADMIN', 'MANAGER', 'ADMIN'].includes(role())) return true;
+  if (role() === 'SUPER_ADMIN') return true;
   return permissionSet().has(permissionKey);
 }
 
@@ -67,7 +67,7 @@ export function accessibleWarehouseIds() {
   }
   if (mode === 'SELECTED') return roleIds;
   if (mode === 'ALL') return null;
-  return ['SUPER_ADMIN', 'ADMIN'].includes(role()) ? null : [];
+  return role() === 'SUPER_ADMIN' ? null : [];
 }
 
 export function canAccessWarehouse(warehouseId) {
@@ -78,14 +78,12 @@ export function canAccessWarehouse(warehouseId) {
 }
 
 export function canManageSettings() {
-  // Page access is separate from the narrower database-backed admin actions.
-  return isAdmin() || can('action:settings:manage');
+  return role() === 'SUPER_ADMIN' || can('action:settings:manage');
 }
 
-// Match the current database contract: system_settings and units mutations
-// are guarded by current_user_is_manager() (SUPER_ADMIN / MANAGER only).
+// System settings and unit administration currently remain break-glass-only.
 export function canManageSystemSettings() {
-  return ['SUPER_ADMIN', 'MANAGER'].includes(role());
+  return role() === 'SUPER_ADMIN';
 }
 
 // Profile and role-permission RPCs currently require SUPER_ADMIN explicitly.
@@ -104,8 +102,7 @@ export function canApproveTransactions() {
 export function canCreateTransactionType(type) {
   const t = String(type || '').toUpperCase();
   if (t === 'OPENING_BALANCE') {
-    return ['SUPER_ADMIN', 'MANAGER'].includes(role())
-      && canDatabasePermission('action:transaction:adjustment:create');
+    return canDatabasePermission('action:transaction:adjustment:create');
   }
   if (t === 'GRN' || t === 'RETURN_FROM_USAGE' || t === 'RETURN_FROM_CUSTOMER') {
     return canDatabasePermission('action:transaction:grn:create');
@@ -122,14 +119,25 @@ export function canCreateTransactionType(type) {
 export function canManageStocktake() {
   return [
     'action:stocktake:start', 'action:stocktake:count',
-    'action:stocktake:submit', 'action:stocktake:approve'
+    'action:stocktake:submit', 'action:stocktake:approve', 'action:stocktake:manage'
   ].some(canDatabasePermission);
 }
 
 export function canTransfer() {
-  return ['action:stock_transfer:create', 'action:stock_transfer:view']
-    .some(canDatabasePermission);
+  return [
+    'action:stock_transfer:create', 'action:stock_transfer:view',
+    'action:stock_transfer:receive', 'action:stock_transfer:reject_receipt',
+    'action:stock_transfer:return:create', 'action:stock_transfer:return:review',
+    'action:stock_transfer:return:receive'
+  ].some(canDatabasePermission);
 }
+
+export const canCreateTransfer = () => canDatabasePermission('action:stock_transfer:create');
+export const canReceiveTransfer = () => canDatabasePermission('action:stock_transfer:receive');
+export const canRejectTransferReceipt = () => canDatabasePermission('action:stock_transfer:reject_receipt');
+export const canCreateTransferReturn = () => canDatabasePermission('action:stock_transfer:return:create');
+export const canReviewTransferReturn = () => canDatabasePermission('action:stock_transfer:return:review');
+export const canConfirmTransferReturn = () => canDatabasePermission('action:stock_transfer:return:receive');
 
 export function canAccessPage(page) {
   if (!currentUser() || !page) return false;
