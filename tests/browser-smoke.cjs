@@ -138,16 +138,23 @@ const fs = require('fs');
         }
       });
       let pullFailedAsExpected = false;
+      let pullErrorMessage = '';
       const originalConsoleError = console.error;
       console.error = (...args) => {
         if (String(args[0] || '').includes('[store] pull failed')) return;
         originalConsoleError.apply(console, args);
       };
       try { await pullAll({ silent: true }); }
-      catch (error) { pullFailedAsExpected = /warehouses: network request failed/i.test(error.message); }
+      catch (error) {
+        pullErrorMessage = String(error?.message || error);
+        pullFailedAsExpected = /warehouses: network request failed/i.test(pullErrorMessage);
+      }
       finally { console.error = originalConsoleError; }
       const lineAfterFailedPull = store.data.stocktake_lines.find(x =>
         x.id === '44444444-4444-4444-8444-444444444444'
+      );
+      const pendingAfterFailedPull = queueSnapshot().some(row =>
+        row.source === 'stocktake' && row.status === 'PENDING'
       );
       refreshChecks.remotePullFailurePreservedCache =
         pullFailedAsExpected
@@ -155,7 +162,15 @@ const fs = require('fs');
         && store.data.warehouses[0].id === cachedWarehouse.id
         && store.data.warehouses[0].name === cachedWarehouse.name
         && lineAfterFailedPull?.counted_qty === 24
-        && queueSnapshot().some(row => row.source === 'stocktake' && row.status === 'PENDING');
+        && pendingAfterFailedPull;
+      refreshChecks.pullFailureDiagnostics = {
+        loading: store.loading, loaded: store.loaded, error: pullErrorMessage,
+        warehouseCount: store.data.warehouses.length,
+        warehouseId: store.data.warehouses[0]?.id,
+        warehouseName: store.data.warehouses[0]?.name,
+        countedQuantity: lineAfterFailedPull?.counted_qty,
+        pendingCount: pendingAfterFailedPull
+      };
 
       // Now test account isolation after preserving and validating the real snapshot.
       localStorage.setItem('orshap_wms_data_v5', JSON.stringify({
