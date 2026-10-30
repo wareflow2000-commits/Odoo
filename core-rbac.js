@@ -22,9 +22,9 @@ export function rolePermissions() {
 
 let permCache = { key: '', keys: new Set() };
 function permissionSet() {
-  // Authorization grants are the single effective source for UI permission
-  // hints. Legacy role_permissions/custom_permissions remain management inputs
-  // and are synchronized server-side into authorization_grants.
+  // Authorization grants are the sole effective source for UI permission
+  // hints. Legacy role_permissions remain a read-only compatibility projection;
+  // profile custom_permissions are deprecated and cannot create new grants.
   const grantKeys = (store.authorizationPermissions || []).map(String).sort();
   const key = `g:${grantKeys.join(',')}`;
   if (permCache.key === key) return permCache.keys;
