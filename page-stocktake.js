@@ -19,7 +19,7 @@ import {
   store, pullAll, createStocktakeSession, saveStocktakeCount, submitStocktake,
   reviewStocktake, settleStocktake, closeStocktake,
   warehouseName, areaName, itemNameOnly, shelfPath, warehouseOptions, areaOptions,
-  unitOptions, profileName
+  unitOptions, profileName, hasAnyEffectiveCachedGrant
 } from './core-store.js';
 import { canDatabasePermission } from './core-rbac.js';
 import {
@@ -31,13 +31,46 @@ import { openQrScanner } from './qr-scanner.js';
 
 /* ── permissions ─────────────────────────────────────────────────────────── */
 
-const canStart = () => canDatabasePermission('action:stocktake:start');
-const canCount = () => canDatabasePermission('action:stocktake:count') || canDatabasePermission('action:stocktake:manage');
-const canSubmit = () => canDatabasePermission('action:stocktake:submit');
-const canApprove = () => canDatabasePermission('action:stocktake:approve');
-const canSettle = () => canDatabasePermission('action:stocktake:settle');
-const canClose = () => canDatabasePermission('action:stocktake:close');
-const showSystemColumn = () => canDatabasePermission('action:stocktake:view_system_qty');
+const sessionContext = (session, line = null) => session ? ({
+  resource_type: 'stocktake_session',
+  resource_id: session.id,
+  warehouse_id: session.warehouse_id,
+  owner_id: session.created_by,
+  submitted_by: session.submitted_by || null,
+  status: session.status,
+  review_status: reviewOf(session),
+  offline: !navigator.onLine || !!window.__session?.offline,
+  ...(line ? { line_id: line.id, item_id: line.item_id, shelf_id: line.shelf_id } : {})
+}) : {};
+const canStart = (warehouseId = null, stocktakeType = null, countMode = null) => warehouseId
+  ? canDatabasePermission('action:stocktake:start', {
+      resource_type: 'stocktake_session', warehouse_id: warehouseId,
+      owner_id: window.__session?.id, stocktake_type: stocktakeType, count_mode: countMode
+    })
+  : hasAnyEffectiveCachedGrant('action:stocktake:start');
+const canCount = (session = null, line = null) => {
+  if (!session) return hasAnyEffectiveCachedGrant('action:stocktake:count')
+    || hasAnyEffectiveCachedGrant('action:stocktake:manage');
+  const context = sessionContext(session, line);
+  return canDatabasePermission('action:stocktake:count', context)
+    || canDatabasePermission('action:stocktake:manage', context);
+};
+const canSubmit = session => session
+  ? canDatabasePermission('action:stocktake:submit', sessionContext(session))
+    || canDatabasePermission('action:stocktake:start', sessionContext(session))
+  : hasAnyEffectiveCachedGrant('action:stocktake:submit') || hasAnyEffectiveCachedGrant('action:stocktake:start');
+const canApprove = session => session
+  ? canDatabasePermission('action:stocktake:approve', sessionContext(session))
+  : hasAnyEffectiveCachedGrant('action:stocktake:approve');
+const canSettle = session => session
+  ? canDatabasePermission('action:stocktake:settle', sessionContext(session))
+  : hasAnyEffectiveCachedGrant('action:stocktake:settle');
+const canClose = session => session
+  ? canDatabasePermission('action:stocktake:close', sessionContext(session))
+  : hasAnyEffectiveCachedGrant('action:stocktake:close');
+const showSystemColumn = session => session
+  ? canDatabasePermission('action:stocktake:view_system_qty', sessionContext(session))
+  : hasAnyEffectiveCachedGrant('action:stocktake:view_system_qty');
 
 const F = { tab: 'active', search: '' };
 const TYPES = ['CYCLE', 'FULL', 'SURPRISE', 'RECOUNT'];
@@ -153,7 +186,7 @@ function render() {
             `<div class="o_status_stack">${statusBadge(s.status, statusLabel(s.status))}${statusBadge(r, statusLabel(r))}</div>`,
             `<div class="o_actions_cell">
               <button class="o_btn o_btn_ghost o_btn_sm" data-open="${s.id}" title="${tx('فتح', 'Open')}"><i class="fa-solid fa-eye"></i></button>
-              ${isOpen(s) && r !== 'PENDING_REVIEW' && canSubmit()
+              ${isOpen(s) && r !== 'PENDING_REVIEW' && canSubmit(s)
                 ? `<button class="o_btn o_btn_primary o_btn_sm" data-submit="${s.id}">${tx('إرسال', 'Submit')}</button>` : ''}
             </div>`
           ]
@@ -231,7 +264,11 @@ function openNew() {
       el.querySelector('#stSave').onclick = async () => {
         const d = Object.fromEntries(new FormData(el.querySelector('#stForm')).entries());
         try {
-          const res = await createStocktakeSession({
+          if (!canStart(d.warehouse_id, d.stocktake_type, d.count_mode)) {
+          toast(tx('لا تملك تفويض بدء الجرد في هذا المستودع.', 'You do not have a stocktake-start grant for this warehouse.'), 'error');
+          return;
+        }
+        const res = await createStocktakeSession({
             warehouseId: d.warehouse_id,
             storageAreaId: d.storage_area_id || null,
             type: d.stocktake_type,
@@ -274,8 +311,8 @@ function openSession(id) {
   if (!s) { toast(tx('الجلسة غير موجودة', 'Session not found'), 'error'); return; }
   const p = sessionProgress(s);
   const r = reviewOf(s);
-  const showSystem = showSystemColumn() && !(String(s.count_mode).toUpperCase() === 'BLIND' && ['DRAFT', 'REJECTED'].includes(r));
-  const editable = isOpen(s) && ['DRAFT', 'REJECTED'].includes(r) && canCount();
+  const showSystem = showSystemColumn(s) && !(String(s.count_mode).toUpperCase() === 'BLIND' && ['DRAFT', 'REJECTED'].includes(r));
+  const editable = isOpen(s) && ['DRAFT', 'REJECTED'].includes(r) && canCount(s);
   const currentUser = window.__session?.id;
   const ownSession = currentUser && (s.created_by === currentUser || s.submitted_by === currentUser);
 
@@ -319,8 +356,8 @@ function openSession(id) {
 
   const unsettled = p.lines.filter(l => !l.is_settled && l.counted_qty != null);
   const allSettled = p.total > 0 && p.settled === p.total;
-  const canSettleNow = isOpen(s) && r === 'APPROVED' && canSettle() && unsettled.length > 0;
-  const canCloseNow = isOpen(s) && r === 'APPROVED' && allSettled && canClose();
+  const canSettleNow = isOpen(s) && r === 'APPROVED' && canSettle(s) && unsettled.length > 0;
+  const canCloseNow = isOpen(s) && r === 'APPROVED' && allSettled && canClose(s);
 
   const body = `
     <div class="o_tx_head"><div>
@@ -352,9 +389,9 @@ function openSession(id) {
   const footer = `
     <button class="o_btn o_btn_secondary" id="stkPrint"><i class="fa-solid fa-print"></i> ${tx('طباعة', 'Print')}</button>
     ${editable ? `<button class="o_btn o_btn_secondary" id="stkScan"><i class="fa-solid fa-qrcode"></i> ${tx('مسح رف', 'Scan shelf')}</button>` : ''}
-    ${isOpen(s) && ['DRAFT', 'REJECTED'].includes(r) && canSubmit()
+    ${isOpen(s) && ['DRAFT', 'REJECTED'].includes(r) && canSubmit(s)
       ? `<button class="o_btn o_btn_primary" id="stkSubmit">${tx('إرسال للمراجعة', 'Submit for review')}</button>` : ''}
-    ${isOpen(s) && r === 'PENDING_REVIEW' && canApprove() && !ownSession
+    ${isOpen(s) && r === 'PENDING_REVIEW' && canApprove(s) && !ownSession
       ? `<button class="o_btn o_btn_danger" id="stkReject">${tx('رفض', 'Reject')}</button>
          <button class="o_btn o_btn_success" id="stkApprove">${tx('اعتماد', 'Approve')}</button>` : ''}
     ${canSettleNow ? `<button class="o_btn o_btn_primary" id="stkSettle">${tx('تسوية الفروقات', 'Settle variances')}</button>` : ''}
@@ -417,11 +454,11 @@ function latestScannableSession() {
 }
 
 function scanStocktake(sessionId, onSaved) {
-  if (!canCount()) {
-    toast(tx('لا تملك صلاحية عدّ الجرد.', 'You do not have permission to count stocktake lines.'), 'error');
+  const session = sessionId ? store.byId('stocktake_sessions', sessionId) : latestScannableSession();
+  if (!canCount(session)) {
+    toast(tx('لا تملك صلاحية عدّ الجرد في نطاق هذه الجلسة.', 'You do not have count permission within this stocktake session scope.'), 'error');
     return;
   }
-  const session = sessionId ? store.byId('stocktake_sessions', sessionId) : latestScannableSession();
   if (!session) {
     toast(tx('افتح جلسة جرد نشطة أولاً ثم امسح رمز الرف.',
       'Open an active stocktake session first, then scan a shelf QR.'), 'warning');
@@ -447,7 +484,7 @@ function openScanCount(session, scannedLines, { onSaved } = {}) {
     return;
   }
 
-  const canSeeSystem = showSystemColumn();
+  const canSeeSystem = showSystemColumn(store.byId('stocktake_sessions', lines[0]?.session_id));
   const firstUncounted = lines.find(line => line.counted_qty == null) || lines[0];
   const lineOption = line => {
     const item = store.byId('items', line.item_id) || {};
