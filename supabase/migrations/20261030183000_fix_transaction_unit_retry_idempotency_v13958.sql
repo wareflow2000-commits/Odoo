@@ -219,8 +219,5 @@ BEGIN
     RAISE EXCEPTION 'Transfer unit idempotency guard verification failed';
   END IF;
 
-  -- no additional statements below this point
-    RAISE EXCEPTION 'Transaction unit idempotency guard verification failed';
-  END IF;
 END;
 $verify$;
