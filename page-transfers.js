@@ -476,7 +476,7 @@ function openReceive(id) {
     </div>
     <form id="recForm" class="o_form_grid">
       ${input({ name: 'received_quantity', label: `${tx('الكمية المستلمة الآن', 'Received now')} (${baseUnitOf(t)})`, type: 'number', value: remaining, required: true, attrs: `min="0" max="${remaining}" step="any"` })}
-      ${select({ name: 'destination_shelf_id', label: tx('رف الوجهة', 'Destination shelf'), options: shelves, value: t.destination_shelf_id || '', required: true, placeholder: tx('اختر رفًا', 'Select shelf') })}
+      ${select({ name: 'destination_shelf_id', label: tx('رف الوجهة (مطلوب عند استلام كمية)', 'Destination shelf (required only when receiving stock)'), options: shelves, value: t.destination_shelf_id || '', required: false, placeholder: tx('اختر رفًا عند الاستلام', 'Select shelf when receiving') })}
       ${input({ name: 'batch_no', label: tx('التشغيلة (اختياري)', 'Batch (optional)'), value: t.batch_no || '', attrs: 'disabled' })}
 ${canCreateTransferReturn(t) ? `      <div class="o_field full"><label class="o_checkbox"><input type="checkbox" name="return_remaining" ${remaining <= 0 ? 'checked' : ''}> ${tx('إرجاع الكمية المتبقية إلى المصدر', 'Return remaining quantity to source')}</label></div>
       ${textarea({ name: 'reason', label: tx('سبب الإرجاع (مطلوب عند إرجاع المتبقي)', 'Return reason (required when returning remainder)'), rows: 2 })}` : ''}
@@ -493,6 +493,7 @@ ${canCreateTransferReturn(t) ? `      <div class="o_field full"><label class="o_
         const qty = Number(d.received_quantity || 0);
         const returnRemaining = !!d.return_remaining;
         if (qty < 0 || qty > remaining + 1e-9) { toast(tx('كمية غير صالحة', 'Invalid quantity'), 'warning'); return; }
+        if (qty === 0 && !returnRemaining) { toast(tx('أدخل كمية للاستلام أو اختر إرجاع المتبقي', 'Enter a receipt quantity or choose to return the remainder'), 'warning'); return; }
         if (qty > 0 && !d.destination_shelf_id) { toast(tx('رف الوجهة مطلوب عند الاستلام', 'Destination shelf is required'), 'warning'); return; }
         if (returnRemaining && !String(d.reason || '').trim()) { toast(tx('سبب الإرجاع مطلوب', 'Return reason is required'), 'warning'); return; }
         try {
