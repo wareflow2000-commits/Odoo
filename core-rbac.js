@@ -69,7 +69,7 @@ export function accessibleWarehouseIds() {
   }
   if (mode === 'SELECTED') return roleIds;
   if (mode === 'ALL') return null;
-  return role() === 'SUPER_ADMIN' ? null : [];
+  return [];
 }
 
 export function canAccessWarehouse(warehouseId) {
@@ -80,7 +80,7 @@ export function canAccessWarehouse(warehouseId) {
 }
 
 export function canManageSettings() {
-  return role() === 'SUPER_ADMIN' || can('action:settings:manage');
+  return can('action:settings:manage');
 }
 
 // System settings and unit administration require an explicit grant for
