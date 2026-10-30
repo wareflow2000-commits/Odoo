@@ -94,13 +94,15 @@ const fs = require('fs');
       const multiWarehouseDenied = !offlineWarehouseAllowed(warehouseId);
       window.__session.profile.assigned_warehouse_ids = [warehouseId];
       const saved = await saveStocktakeCount(lineId, 2, 'BOX');
-      // Offline ownership must mirror the database creator-or-manager rule.
-      // ADMIN and WAREHOUSE_MANAGER are not current_user_is_manager() roles.
+      // Offline ownership must mirror the database creator-or-explicit-manage rule.
+      // No role name (including MANAGER and ADMIN) grants an implicit bypass.
       const originalCreator = store.data.stocktake_sessions[0].created_by;
       const originalRole = window.__session.role;
       store.data.stocktake_sessions[0].created_by = '88888888-8888-4888-8888-888888888888';
       window.__session.role = 'ADMIN';
       const adminCannotCountAnotherUsersSession = await expectBlocked(() => saveStocktakeCount(lineId, 3, 'BOX'));
+      window.__session.role = 'MANAGER';
+      const managerCannotCountAnotherUsersSession = await expectBlocked(() => saveStocktakeCount(lineId, 3, 'BOX'));
       window.__session.role = 'WAREHOUSE_MANAGER';
       const warehouseManagerCannotCountAnotherUsersSession = await expectBlocked(() => saveStocktakeCount(lineId, 3, 'BOX'));
       store.data.stocktake_sessions[0].created_by = originalCreator;
@@ -491,48 +493,11 @@ const fs = require('fs');
         && !canAccessPage('inventory');
       store.data.role_permissions = originalRolePermissions;
       window.__session = originalSession;
+      const nonSuperAdminRoles = Object.keys(roleContract).filter(name => name !== 'SUPER_ADMIN');
       const permissionRoleContract = roleContract.SUPER_ADMIN.profiles
         && roleContract.SUPER_ADMIN.systemSettings
-        && !roleContract.MANAGER.profiles && roleContract.MANAGER.systemSettings
-        && !roleContract.ADMIN.profiles && !roleContract.ADMIN.systemSettings
-        && !roleContract.WAREHOUSE_MANAGER.profiles && !roleContract.WAREHOUSE_MANAGER.systemSettings
-        && !roleContract.CLERK.profiles && !roleContract.CLERK.systemSettings
-        && roleContract.SUPER_ADMIN.stocktakeStart && roleContract.MANAGER.stocktakeStart
-        && roleContract.ADMIN.stocktakeStart && !roleContract.WAREHOUSE_MANAGER.stocktakeStart
-        && !roleContract.CLERK.stocktakeStart
-        && roleContract.SUPER_ADMIN.issuePermission && roleContract.MANAGER.issuePermission
-        && roleContract.ADMIN.issuePermission && !roleContract.WAREHOUSE_MANAGER.issuePermission
-        && !roleContract.CLERK.issuePermission
-        && roleContract.SUPER_ADMIN.inventoryPage && roleContract.MANAGER.inventoryPage
-        && roleContract.ADMIN.inventoryPage && !roleContract.WAREHOUSE_MANAGER.inventoryPage
-        && !roleContract.CLERK.inventoryPage
-        && roleContract.SUPER_ADMIN.issueCreate && roleContract.MANAGER.issueCreate
-        && roleContract.ADMIN.issueCreate && !roleContract.WAREHOUSE_MANAGER.issueCreate
-        && !roleContract.CLERK.issueCreate
-        && roleContract.SUPER_ADMIN.customerReturn && roleContract.MANAGER.customerReturn
-        && roleContract.ADMIN.customerReturn && !roleContract.WAREHOUSE_MANAGER.customerReturn
-        && !roleContract.CLERK.customerReturn
-        && roleContract.SUPER_ADMIN.supplierReturn && roleContract.MANAGER.supplierReturn
-        && roleContract.ADMIN.supplierReturn && !roleContract.WAREHOUSE_MANAGER.supplierReturn
-        && !roleContract.CLERK.supplierReturn
-        && roleContract.SUPER_ADMIN.openingBalance && roleContract.MANAGER.openingBalance
-        && !roleContract.ADMIN.openingBalance && !roleContract.WAREHOUSE_MANAGER.openingBalance
-        && !roleContract.CLERK.openingBalance
-        && roleContract.SUPER_ADMIN.systemQty && roleContract.MANAGER.systemQty
-        && roleContract.ADMIN.systemQty && !roleContract.WAREHOUSE_MANAGER.systemQty
-        && !roleContract.CLERK.systemQty
-        && roleContract.SUPER_ADMIN.approve && roleContract.MANAGER.approve
-        && roleContract.ADMIN.approve && !roleContract.WAREHOUSE_MANAGER.approve
-        && !roleContract.CLERK.approve
-        && roleContract.SUPER_ADMIN.itemCreate && roleContract.MANAGER.itemCreate
-        && roleContract.ADMIN.itemCreate && !roleContract.WAREHOUSE_MANAGER.itemCreate
-        && !roleContract.CLERK.itemCreate
-        && roleContract.SUPER_ADMIN.itemUpdate && roleContract.MANAGER.itemUpdate
-        && roleContract.ADMIN.itemUpdate && !roleContract.WAREHOUSE_MANAGER.itemUpdate
-        && !roleContract.CLERK.itemUpdate
-        && roleContract.SUPER_ADMIN.itemDelete && roleContract.MANAGER.itemDelete
-        && roleContract.ADMIN.itemDelete && !roleContract.WAREHOUSE_MANAGER.itemDelete
-        && !roleContract.CLERK.itemDelete
+        && Object.values(roleContract.SUPER_ADMIN).every(Boolean)
+        && nonSuperAdminRoles.every(name => Object.values(roleContract[name]).every(value => value === false))
         && warehouseManagerExplicitGrant && wildcardDoesNotBypassDatabase;
       const w1 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
       const w2 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2';
