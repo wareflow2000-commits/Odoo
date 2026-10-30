@@ -40,6 +40,14 @@ export function can(permissionKey) {
   return set.has(permissionKey) || set.has('*');
 }
 
+// Mirrors public.current_user_has_permission(): SUPER_ADMIN, MANAGER and ADMIN
+// are database-level permission bypass roles; WAREHOUSE_MANAGER is not.
+export function canDatabasePermission(permissionKey) {
+  if (!currentUser()) return false;
+  if (['SUPER_ADMIN', 'MANAGER', 'ADMIN'].includes(role())) return true;
+  return permissionSet().has(permissionKey);
+}
+
 export function canAny(keys = []) {
   return keys.some(can);
 }
