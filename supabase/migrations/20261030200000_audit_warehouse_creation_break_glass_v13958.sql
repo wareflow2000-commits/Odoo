@@ -1,63 +1,88 @@
--- Ensure warehouse creation always records the authorization decision.
--- Preserve the existing warehouse-scope gate; add the authoritative action check
--- at the RLS write boundary so SUPER_ADMIN break-glass is audited on actual INSERT.
+-- Route warehouse creation through the authorization engine so the
+-- SUPER_ADMIN global break-glass decision is recorded at the actual RLS write
+-- boundary. Preserve the existing no-assigned-warehouse restriction for
+-- non-SUPER_ADMIN actors and keep the existing policy contract.
 
 DO $guard$
 BEGIN
   IF NOT EXISTS (
-    SELECT 1
-    FROM pg_policies
-    WHERE schemaname = 'public'
-      AND tablename = 'warehouses'
-      AND policyname = 'warehouses_manager_insert'
-      AND cmd = 'INSERT'
+    SELECT 1 FROM pg_policies
+    WHERE schemaname='public' AND tablename='warehouses'
+      AND policyname='warehouses_manager_insert' AND cmd='INSERT'
+      AND with_check ILIKE '%current_user_can_create_warehouse%'
   ) THEN
-    RAISE EXCEPTION 'Expected warehouses_manager_insert policy was not found';
+    RAISE EXCEPTION 'Expected warehouse creation RLS policy anchor was not found';
   END IF;
-
-  IF NOT has_function_privilege(
-    'authenticated',
-    'public.authorize_action(text,text,uuid,uuid,jsonb,boolean)',
-    'EXECUTE'
-  ) THEN
-    RAISE EXCEPTION 'authenticated role cannot execute authorize_action';
+  IF to_regprocedure('public.authorize_action(text,text,uuid,uuid,jsonb,boolean)') IS NULL THEN
+    RAISE EXCEPTION 'Contextual authorization engine is missing';
   END IF;
 END;
 $guard$;
 
-DROP POLICY IF EXISTS warehouses_manager_insert ON public.warehouses;
+CREATE OR REPLACE FUNCTION public.current_user_can_create_warehouse()
+RETURNS boolean
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path TO ''
+AS $function$
+DECLARE
+  v_user_id uuid := (SELECT auth.uid());
+  v_role text;
+  v_status text;
+  v_assigned uuid[];
+BEGIN
+  IF v_user_id IS NULL THEN
+    RETURN false;
+  END IF;
 
-CREATE POLICY warehouses_manager_insert
-ON public.warehouses
-FOR INSERT
-TO public
-WITH CHECK (
-  public.current_user_can_create_warehouse()
-  AND public.authorize_action(
+  SELECT p.role,p.status,COALESCE(p.assigned_warehouse_ids,ARRAY[]::uuid[])
+    INTO v_role,v_status,v_assigned
+  FROM public.profiles p
+  WHERE p.id=v_user_id;
+
+  IF NOT FOUND OR v_status<>'ACTIVE' THEN
+    RETURN false;
+  END IF;
+
+  -- A user already bound to one or more warehouses cannot create a new
+  -- warehouse outside that assignment. SUPER_ADMIN is the sole global actor.
+  IF v_role<>'SUPER_ADMIN' AND cardinality(v_assigned)>0 THEN
+    RETURN false;
+  END IF;
+
+  -- authorize_action records explicit ALLOW/DENY decisions and always records
+  -- SUPER_ADMIN break-glass even when a helper is called from an RLS policy.
+  RETURN public.authorize_action(
     'action:warehouse:manage',
     NULL,
     NULL,
     NULL,
     '{}'::jsonb,
     true
-  )
-);
+  );
+END;
+$function$;
 
 DO $verify$
 DECLARE
-  v_check text;
+  v_volatility "char";
+  v_source text;
 BEGIN
-  SELECT with_check INTO v_check
-  FROM pg_policies
-  WHERE schemaname = 'public'
-    AND tablename = 'warehouses'
-    AND policyname = 'warehouses_manager_insert'
-    AND cmd = 'INSERT';
+  SELECT p.provolatile,p.prosrc INTO v_volatility,v_source
+  FROM pg_proc p
+  WHERE p.oid='public.current_user_can_create_warehouse()'::regprocedure;
 
-  IF v_check IS NULL
-     OR position('current_user_can_create_warehouse' IN v_check) = 0
-     OR position('authorize_action' IN v_check) = 0 THEN
-    RAISE EXCEPTION 'Warehouse creation policy is missing scope or audited authorization';
+  IF v_volatility<>'v' OR position('authorize_action' IN v_source)=0 THEN
+    RAISE EXCEPTION 'Warehouse creation helper is not volatile or does not use audited authorization';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname='public' AND tablename='warehouses'
+      AND policyname='warehouses_manager_insert' AND cmd='INSERT'
+      AND with_check ILIKE '%current_user_can_create_warehouse%'
+  ) THEN
+    RAISE EXCEPTION 'Warehouse creation RLS policy no longer uses the guarded helper';
   END IF;
 END;
 $verify$;
