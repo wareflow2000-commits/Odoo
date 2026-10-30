@@ -21,7 +21,7 @@ import {
   warehouseName, areaName, itemNameOnly, shelfPath, warehouseOptions, areaOptions,
   unitOptions, profileName
 } from './core-store.js';
-import { can, isElevated } from './core-rbac.js';
+import { canDatabasePermission } from './core-rbac.js';
 import {
   fmtDateTime, fmtNum, statusLabel, todayISO, stocktakeTypeLabel, countModeLabel
 } from './core-utils.js';
@@ -31,13 +31,13 @@ import { openQrScanner } from './qr-scanner.js';
 
 /* ── permissions ─────────────────────────────────────────────────────────── */
 
-const canStart = () => isElevated() || can('action:stocktake:start');
-const canCount = () => isElevated() || can('action:stocktake:count') || can('action:stocktake:start');
-const canSubmit = () => isElevated() || can('action:stocktake:submit') || can('action:stocktake:start');
-const canApprove = () => isElevated() || can('action:stocktake:approve');
-const canSettle = () => isElevated() || can('action:stocktake:settle');
-const canClose = () => isElevated() || can('action:stocktake:close');
-const showSystemColumn = () => isElevated() || can('action:stocktake:view_system_qty');
+const canStart = () => canDatabasePermission('action:stocktake:start');
+const canCount = () => canDatabasePermission('action:stocktake:count') || canStart();
+const canSubmit = () => canDatabasePermission('action:stocktake:submit') || canStart();
+const canApprove = () => canDatabasePermission('action:stocktake:approve');
+const canSettle = () => canDatabasePermission('action:stocktake:settle');
+const canClose = () => canDatabasePermission('action:stocktake:close');
+const showSystemColumn = () => canDatabasePermission('action:stocktake:view_system_qty');
 
 const F = { tab: 'active', search: '' };
 const TYPES = ['CYCLE', 'FULL', 'SURPRISE', 'RECOUNT'];
