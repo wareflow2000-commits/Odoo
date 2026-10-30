@@ -50,9 +50,19 @@ export function orshapCanPermission(key) { return can(key); }
 export function accessibleWarehouseIds() {
   const u = currentUser();
   if (!u) return [];
-  if (isElevated()) return null; // null = all warehouses
-  const assigned = u.profile?.assigned_warehouse_ids;
-  return Array.isArray(assigned) ? assigned : [];
+  const assigned = Array.isArray(u.profile?.assigned_warehouse_ids)
+    ? [...new Set(u.profile.assigned_warehouse_ids.filter(Boolean))] : [];
+  const roleScope = store.get('role_warehouse_scopes').find(row =>
+    String(row.role_name || '').toUpperCase() === role()
+  ) || u.profile?.role_warehouse_scope || null;
+  const mode = String(roleScope?.scope_mode || 'INHERIT').toUpperCase();
+  const roleIds = Array.isArray(roleScope?.warehouse_ids) ? roleScope.warehouse_ids : [];
+  if (assigned.length) {
+    return mode === 'SELECTED' ? assigned.filter(id => roleIds.includes(id)) : assigned;
+  }
+  if (mode === 'SELECTED') return roleIds;
+  if (mode === 'ALL') return null;
+  return ['SUPER_ADMIN', 'ADMIN'].includes(role()) ? null : [];
 }
 
 export function canAccessWarehouse(warehouseId) {
