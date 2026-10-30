@@ -365,6 +365,14 @@ export async function pullAll({ silent = false } = {}) {
 export function applyAccessFilter() {
   const user = window.__session;
   if (!user?.id) return;
+  const roleName = String(user.role || user.profile?.role || '').toUpperCase();
+
+  // SUPER_ADMIN is the sole global break-glass identity. Offline work still
+  // has its separate exactly-one-explicit-warehouse restriction.
+  if (roleName === 'SUPER_ADMIN') {
+    store.noWarehouseAccess = false;
+    return;
+  }
 
   if (store.scopeConfigLoaded !== true) {
     store.noWarehouseAccess = true;
@@ -380,7 +388,6 @@ export function applyAccessFilter() {
     return;
   }
 
-  const roleName = String(user.role || user.profile?.role || '').toUpperCase();
   const assigned = Array.isArray(user.profile?.assigned_warehouse_ids)
     ? [...new Set(user.profile.assigned_warehouse_ids.filter(Boolean))] : [];
   const roleScope = store.get('role_warehouse_scopes').find(row =>
