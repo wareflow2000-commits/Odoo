@@ -20,7 +20,7 @@ SET resource_type=CASE
     grant_reason='Migrated legacy custom permission to a warehouse-scoped grant'
 FROM public.profiles p
 WHERE g.subject_type='USER' AND g.user_id=p.id
-  AND g.effect='ALLOW' AND g.revoked_at IS NULL
+  AND g.effect IN ('ALLOW','DENY') AND g.revoked_at IS NULL
   AND g.scope_type='ALL' AND g.resource_type IS NULL AND g.warehouse_id IS NULL
   AND cardinality(COALESCE(p.assigned_warehouse_ids,ARRAY[]::uuid[]))=1
   AND g.permission_key LIKE 'action:%'
@@ -38,7 +38,7 @@ WHERE g.subject_type='USER' AND g.user_id=p.id
 UPDATE public.authorization_grants g
 SET revoked_at=now(),revoked_by=NULL,
     revocation_reason='Revoked by least-privilege migration; regrant with explicit resource and warehouse scope'
-WHERE g.subject_type='USER' AND g.effect='ALLOW' AND g.revoked_at IS NULL
+WHERE g.subject_type='USER' AND g.effect IN ('ALLOW','DENY') AND g.revoked_at IS NULL
   AND g.scope_type='ALL'
   AND (g.resource_type IS NULL OR g.warehouse_id IS NULL);
 
