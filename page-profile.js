@@ -61,7 +61,7 @@ function render() {
           ${input({ name: 'phone', label: tx('الهاتف', 'Phone'), value: p.phone || '' })}
         </form>
         <div class="o_line_tools" style="margin-top:10px">
-          <button class="o_btn o_btn_primary o_btn_sm" id="profSave"><i class="fa-solid fa-floppy-disk"></i> ${tx('حفظ', 'Save')}</button>
+          <button class="o_btn o_btn_primary o_btn_sm" id="profSave" ${navigator.onLine && !user.offline ? '' : 'disabled'}><i class="fa-solid fa-floppy-disk"></i> ${tx('حفظ', 'Save')}</button>
           <span class="o_muted">${tx('الاسم والهاتف فقط قابلان للتعديل من هنا.', 'Only name and phone can be edited here.')}</span>
         </div>`)}
       ${card(`<i class="fa-solid fa-warehouse"></i> ${tx('المستودعات المتاحة', 'Accessible warehouses')}`,
@@ -97,6 +97,10 @@ function render() {
 function bind(_, main) {
   const save = main.querySelector('#profSave');
   if (save) save.onclick = async () => {
+    if (!navigator.onLine || window.__session?.offline) {
+      toast(tx('تعديل الملف الشخصي يتطلب اتصالًا مباشرًا بالخادم.', 'Profile changes require a live server connection.'), 'warning');
+      return;
+    }
     const form = main.querySelector('#profileForm');
     const d = Object.fromEntries(new FormData(form).entries());
     const id = window.__session?.id;
