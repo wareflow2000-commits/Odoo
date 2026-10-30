@@ -156,7 +156,10 @@ export function loadLocal() {
       store.authorizationPermissions = [];
       store.authorizationPermissionsUserId = null;
       store.scopeConfigLoaded = false;
-      store.scopeConfigLoaded = false;
+      store.noWarehouseAccess = !!window.__session?.id
+        && !ELEVATED_ROLES.includes(String(window.__session?.role || '').toUpperCase())
+        && !(Array.isArray(window.__session?.profile?.assigned_warehouse_ids)
+          && window.__session.profile.assigned_warehouse_ids.length);
       store.loaded = false;
       enrichAll();
       return false;
