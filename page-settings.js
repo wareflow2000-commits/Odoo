@@ -334,7 +334,7 @@ function renderUsers(banned) {
   return card('', table(
     [{ label: tx('المستخدم', 'User') }, { label: tx('البريد', 'Email') }, { label: tx('الدور', 'Role') },
      { label: tx('الحالة', 'Status') }, { label: tx('المستودعات', 'Warehouses'), num: true },
-     { label: tx('صلاحيات مخصصة', 'Custom perms'), num: true }, { label: tx('إجراءات', 'Actions') }],
+     { label: tx('إجراءات', 'Actions') }],
     users.map(u => ({
       cells: [
         `<span class="o_cell_main">${u.name || '—'}</span><div class="o_cell_sub">${String(u.id).slice(0, 8)}</div>`,
@@ -342,7 +342,6 @@ function renderUsers(banned) {
         badge(roleLabel(u.role), u.role === 'SUPER_ADMIN' ? 'purple' : u.role === 'CLERK' ? 'gray' : 'blue'),
         badge(u.status ? statusLabel(u.status) : '—', (u.status || '') === 'ACTIVE' ? 'green' : 'red'),
         fmtNum((u.assigned_warehouse_ids || []).length),
-        fmtNum((u.custom_permissions || []).length),
         `<div class="o_actions_cell">
           ${canWrite ? `<button class="o_btn o_btn_ghost o_btn_sm" data-user="${u.id}" title="${tx('تعديل', 'Edit')}"><i class="fa-solid fa-pen"></i></button>` : ''}
         </div>`
@@ -371,7 +370,7 @@ function renderRoles(banned) {
   return `
     <div class="o_perm_bar">
       <select class="o_filter_select" id="permRole">
-        ${ROLES.map(r => `<option value="${r}" ${F.role === r ? 'selected' : ''}>${roleLabel(r)}</option>`).join('')}
+        ${ROLES.filter(r => r !== 'SUPER_ADMIN').map(r => `<option value="${r}" ${F.role === r ? 'selected' : ''}>${roleLabel(r)}</option>`).join('')}
       </select>
       <input class="o_filter_input" id="permSearch" placeholder="${tx('تصفية الصلاحيات…', 'Filter permissions…')}" value="${F.permSearch}">
       <button class="o_btn o_btn_ghost o_btn_sm" id="permAll">${tx('تحديد الكل', 'Select all')}</button>
@@ -379,6 +378,10 @@ function renderRoles(banned) {
       <button class="o_btn o_btn_primary o_btn_sm" id="permSave" ${canWrite ? '' : 'disabled'}>
         <i class="fa-solid fa-floppy-disk"></i> ${tx('حفظ صلاحيات الدور', 'Save role permissions')}</button>
     </div>
+    ${alertBox(tx(
+      'صلاحيات الدور تُطبّق داخل نطاق مستودعاته الفعلي. تجاوز الطوارئ للمسؤول الأعلى فقط ولا يُدار من مصفوفة الأدوار.',
+      'Role grants apply only within the role/user effective warehouse scope. SUPER_ADMIN break-glass is not managed in the role matrix.'
+    ), 'info')}
     <div class="o_perm_groups">
       ${[...groups.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([g, list]) => `
         <div class="o_perm_group">
@@ -1551,7 +1554,7 @@ function authorizationGrantModal() {
       <select name="warehouse_id"><option value="">— ${tx('كل المستودعات ضمن نطاق المستخدم', 'All warehouses within user scope')} —</option>${warehouses.map(w => `<option value="${esc(w.id)}">${esc(w.code || '')} — ${esc(w.name || '')}</option>`).join('')}</select></div>
     <div class="o_field"><label>${tx('نطاق البيانات', 'Data scope')}</label>
       <select name="scope_type" id="authScopeType">
-        <option value="ALL">ALL</option><option value="OWN">OWN</option><option value="WAREHOUSE">WAREHOUSE</option><option value="CONTEXT">CONTEXT</option>
+        <option value="WAREHOUSE" selected>WAREHOUSE</option><option value="OWN">OWN</option><option value="CONTEXT">CONTEXT</option><option value="ALL">ALL</option>
       </select></div>
     <div class="o_field full"><label>${tx('شروط السياق JSON (لنطاق CONTEXT)', 'Context conditions JSON (for CONTEXT scope)')}</label>
       <textarea name="conditions" rows="3" placeholder='{"status":"PENDING_APPROVAL"}'></textarea></div>
@@ -1566,9 +1569,19 @@ function authorizationGrantModal() {
     onMount: (el, close) => {
       const form = el.querySelector('#authorizationGrantForm');
       const subjectType = form.querySelector('#authSubjectType');
+      const scopeSelect = form.querySelector('#authScopeType');
+      const warehouseSelect = form.querySelector('[name="warehouse_id"]');
+      const resourceTypeInput = form.querySelector('[name="resource_type"]');
       const syncSubject = () => {
-        form.querySelector('#authUserWrap').style.display = subjectType.value === 'USER' ? '' : 'none';
-        form.querySelector('#authRoleWrap').style.display = subjectType.value === 'ROLE' ? '' : 'none';
+        const isUserGrant = subjectType.value === 'USER';
+        form.querySelector('#authUserWrap').style.display = isUserGrant ? '' : 'none';
+        form.querySelector('#authRoleWrap').style.display = isUserGrant ? 'none' : '';
+        const allOption = scopeSelect.querySelector('option[value="ALL"]');
+        allOption.disabled = isUserGrant;
+        if (isUserGrant && scopeSelect.value === 'ALL') scopeSelect.value = 'WAREHOUSE';
+        warehouseSelect.required = isUserGrant;
+        resourceTypeInput.required = isUserGrant;
+        warehouseSelect.disabled = !isUserGrant && scopeSelect.value === 'ALL';
       };
       subjectType.onchange = syncSubject;
       syncSubject();
@@ -1588,6 +1601,11 @@ function authorizationGrantModal() {
           return;
         }
         const resourceId = data.resource_id.trim() || null;
+        if (data.subject_type === 'USER'
+            && (data.scope_type === 'ALL' || !data.warehouse_id || !data.resource_type.trim())) {
+          toast(tx('منحة المستخدم تتطلب نوع مورد ومستودعاً واحداً ونطاق بيانات محدداً.', 'A user grant requires a resource type, one warehouse and a bounded data scope.'), 'warning');
+          return;
+        }
         if (resourceId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(resourceId)) {
           toast(tx('معرّف السجل ليس UUID صالحاً.', 'Resource record ID is not a valid UUID.'), 'error');
           return;
