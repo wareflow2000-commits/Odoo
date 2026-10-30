@@ -66,6 +66,7 @@ export const store = {
   offline: false,
   lastSync: null,
   noWarehouseAccess: false,
+  scopeConfigLoaded: false,
   loading: false,
   error: null,
   listeners: new Set(),
@@ -95,12 +96,27 @@ export function offlineWarehouseAllowed(warehouseId) {
   if (!warehouseId || !session?.id) return false;
   // Resolve scope only from the active user's own profile. Never borrow another
   // cached profile's warehouse assignments just because it appears first.
+  if (store.scopeConfigLoaded !== true) return false;
   const cachedProfile = store.get('profiles').find(p => p.id === session.id);
   const profile = session.profile?.id === session.id
     ? session.profile
     : (cachedProfile || {});
   const assigned = [...new Set((profile.assigned_warehouse_ids || []).filter(Boolean))];
   if (assigned.length !== 1 || assigned[0] !== warehouseId) return false;
+  if (store.scopeConfigLoaded !== true) {
+    store.noWarehouseAccess = true;
+    for (const t of [
+      'warehouses', 'zones', 'storage_areas', 'warehouse_storage_areas',
+      'sections', 'shelves', 'stock', 'transactions', 'transaction_lines',
+      'stocktake_sessions', 'stocktake_lines', 'stocktake_logs',
+      'stock_transfers', 'stock_transfer_orders', 'inventory_ledger',
+      'transaction_ledger', 'transaction_audit', 'audit_logs',
+      'archive_movements', 'archive_balances', 'sync_log'
+    ]) store.data[t] = [];
+    enrichAll();
+    return;
+  }
+
   const roleScope = store.get('role_warehouse_scopes').find(row =>
     String(row.role_name || '').toUpperCase() === String(session.role || '').toUpperCase()
   ) || profile.role_warehouse_scope || null;
@@ -117,7 +133,7 @@ let persistTimer = null;
 export function persist(immediate = false) {
   const write = () => {
     try {
-      const payload = { ...store.data, __cached_user_id: currentUserId(), __saved_at: new Date().toISOString() };
+      const payload = { ...store.data, __cached_user_id: currentUserId(), __scope_config_loaded: store.scopeConfigLoaded === true, __saved_at: new Date().toISOString() };
       localStorage.setItem(LS_KEY, JSON.stringify(payload));
       if (window.orshapSQLite?.saveState) {
         window.orshapSQLite.saveState(store.data).catch(() => {});
@@ -158,6 +174,7 @@ export function loadLocal() {
     for (const t of TABLES) {
       if (Array.isArray(parsed[t])) store.data[t] = parsed[t];
     }
+    store.scopeConfigLoaded = parsed.__scope_config_loaded === true;
     enrichAll();
     store.loaded = true;
     return true;
@@ -253,7 +270,7 @@ export function enrichAll() {
 
 /* ── remote pull ────────────────────────────────────────────────────────── */
 
-const REQUIRED = new Set(['warehouses', 'items', 'stock', 'transactions', 'transaction_lines', 'shelves']);
+const REQUIRED = new Set(['warehouses', 'items', 'stock', 'transactions', 'transaction_lines', 'shelves', 'role_warehouse_scopes']);
 
 export async function pullAll({ silent = false } = {}) {
   if (store.loading) return store.data;
@@ -310,6 +327,7 @@ export async function pullAll({ silent = false } = {}) {
     for (const [t, list] of results) {
       if (list !== null) store.data[t] = list;
     }
+    store.scopeConfigLoaded = results.some(([t, list]) => t === 'role_warehouse_scopes' && list !== null);
 
     // Optional tables that failed to read retain their prior cache; only a
     // successful query returning zero rows is allowed to replace data with [].
