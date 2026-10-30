@@ -409,8 +409,6 @@ export function applyAccessFilter() {
     allowedIds = new Set(roleIds);
   } else if (mode === 'ALL') {
     allowedIds = null;
-  } else if (['SUPER_ADMIN'].includes(roleName)) {
-    allowedIds = null; // legacy admin-wide access only for INHERIT
   } else {
     allowedIds = new Set();
   }
