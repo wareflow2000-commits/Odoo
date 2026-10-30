@@ -379,6 +379,7 @@ function renderRoles(banned) {
 }
 
 function renderUnits(banned) {
+  const canWrite = !banned && navigator.onLine && !window.__session?.offline;
   const units = [...store.get('units')].sort((a, b) => String(a.code).localeCompare(String(b.code)));
   const items = [...store.get('items')].sort((a, b) => String(a.code).localeCompare(String(b.code)));
   const allConvs = store.get('item_unit_conversions');
@@ -399,14 +400,14 @@ function renderUnits(banned) {
         table(
           [{ label: tx('الرمز', 'Code') }, { label: tx('الاسم', 'Name') }, { label: '', width: '80px' }],
           units.map(u => ({
-            cells: [u.code, u.name, banned ? '' : `<div class="o_actions_cell">
+            cells: [u.code, u.name, !canWrite ? '' : `<div class="o_actions_cell">
               <button class="o_btn o_btn_ghost o_btn_sm" data-unit="${u.id}"><i class="fa-solid fa-pen"></i></button>
               <button class="o_btn o_btn_ghost o_btn_sm" data-unit-del="${u.id}"><i class="fa-solid fa-trash"></i></button>
             </div>`]
           })),
           { emptyTitle: tx('لا توجد وحدات', 'No units') }
         ),
-        `<button class="o_btn o_btn_primary o_btn_sm" onclick="OW.wms.unitModal()" ${banned ? 'disabled' : ''}>
+        `<button class="o_btn o_btn_primary o_btn_sm" onclick="OW.wms.unitModal()" ${canWrite ? '' : 'disabled'}>
           <i class="fa-solid fa-plus"></i> ${tx('وحدة', 'Unit')}</button>`, 'flush-body')}
       ${card(`<i class="fa-solid fa-arrows-left-right"></i> ${tx('تحويلات الأصناف', 'Item conversions')}`,
         `${conversionWarning}
@@ -419,7 +420,7 @@ function renderUnits(banned) {
             return {
               cells: [esc(itemNameOnly(c.item_id)), esc(base), esc(c.unit_code), fmtNum(c.factor_to_base),
                 esc(`1 ${c.unit_code} = ${fmtNum(c.factor_to_base)} ${base}`),
-                banned ? '' : `<div class="o_actions_cell">
+                !canWrite ? '' : `<div class="o_actions_cell">
                 <button class="o_btn o_btn_ghost o_btn_sm" data-conv="${c.id}"><i class="fa-solid fa-pen"></i></button>
                 <button class="o_btn o_btn_ghost o_btn_sm" data-conv-del="${c.id}"><i class="fa-solid fa-trash"></i></button>
               </div>`]
@@ -427,7 +428,7 @@ function renderUnits(banned) {
           }),
           { emptyTitle: tx('لا توجد تحويلات', 'No conversions') }
         )}`,
-        `<button class="o_btn o_btn_primary o_btn_sm" onclick="OW.wms.convModal()" ${banned ? 'disabled' : ''}>
+        `<button class="o_btn o_btn_primary o_btn_sm" onclick="OW.wms.convModal()" ${canWrite ? '' : 'disabled'}>
           <i class="fa-solid fa-plus"></i> ${tx('تحويل', 'Conversion')}</button>`, 'flush-body')}
     </div>`;
 }
