@@ -306,8 +306,7 @@ BEGIN
       END)
   );
 END;
-$function$
-
+$function$;
 
 CREATE OR REPLACE FUNCTION public.guard_transaction_status_change()
 RETURNS trigger
