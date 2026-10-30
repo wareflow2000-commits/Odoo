@@ -92,10 +92,6 @@ function render() {
   const totalSent = lines.reduce((n, t) => n + Number(t.quantity || 0), 0);
   const totalReceived = lines.reduce((n, t) => n + Number(t.received_quantity || 0), 0);
   const canCreate = canCreateTransfer();
-  const canReceive = canReceiveTransfer();
-  const canReject = canRejectTransferReceipt();
-  const canReviewReturn = canReviewTransferReturn();
-  const canConfirmReturn = canConfirmTransferReturn();
 
   return `
   ${pageHead(tx('التحويلات', 'Transfers'),
@@ -120,7 +116,7 @@ function render() {
       { value: 'returns', label: tx('المرتجعات', 'Returns'), count: store.get('stock_transfers').filter(t => RETURN_STATES.includes(t.status) || Number(t.return_requested_quantity || 0) > 0).length, onclick: "OW.wms.transferTab('returns')" },
       { value: 'all', label: tx('كل الأسطر', 'All lines'), count: store.get('stock_transfers').length, onclick: "OW.wms.transferTab('all')" }
     ], F.tab)}
-    ${F.tab === 'orders' ? renderOrders(orders) : renderLines(lines, can)}
+    ${F.tab === 'orders' ? renderOrders(orders) : renderLines(lines)}
   </div>`;
 }
 
@@ -147,7 +143,7 @@ function renderOrders(orders) {
   ), '', 'flush-body');
 }
 
-function renderLines(lines, can) {
+function renderLines(lines) {
   return card('', table(
     [{ label: tx('المرجع', 'Reference') }, { label: tx('الصنف', 'Item') }, { label: tx('من', 'From') },
      { label: tx('إلى', 'To') }, { label: tx('مرسل', 'Sent'), num: true }, { label: tx('مستلم', 'Received'), num: true },
@@ -165,10 +161,10 @@ function renderLines(lines, can) {
           (t.returned_quantity ? t.returned_base_unit : null) || baseUnitOf(t), baseUnitOf(t)),
         statusBadge(t.status, statusLabel(t.status)),
         `<div class="o_actions_cell">
-          ${IN_TRANSIT.includes(t.status) && canReceive ? `<button class="o_btn o_btn_success o_btn_sm" data-receive="${t.id}">${tx('استلام', 'Receive')}</button>` : ''}
-          ${t.return_review_status === 'PENDING' && canReviewReturn ? `<button class="o_btn o_btn_primary o_btn_sm" data-review="${t.id}">${tx('مراجعة المرتجع', 'Review return')}</button>` : ''}
-          ${t.return_review_status === 'APPROVED' && t.status === 'RETURN_IN_TRANSIT' && canConfirmReturn ? `<button class="o_btn o_btn_primary o_btn_sm" data-confirm-return="${t.id}">${tx('تأكيد المرتجع', 'Confirm return')}</button>` : ''}
-          ${IN_TRANSIT.includes(t.status) && canReject ? `<button class="o_btn o_btn_danger o_btn_sm" data-reject="${t.id}" title="${tx('رفض الاستلام', 'Reject receipt')}"><i class="fa-solid fa-xmark"></i></button>` : ''}
+          ${IN_TRANSIT.includes(t.status) && canReceiveTransfer(t) ? `<button class="o_btn o_btn_success o_btn_sm" data-receive="${t.id}">${tx('استلام', 'Receive')}</button>` : ''}
+          ${t.return_review_status === 'PENDING' && canReviewTransferReturn(t) ? `<button class="o_btn o_btn_primary o_btn_sm" data-review="${t.id}">${tx('مراجعة المرتجع', 'Review return')}</button>` : ''}
+          ${t.return_review_status === 'APPROVED' && t.status === 'RETURN_IN_TRANSIT' && canConfirmTransferReturn(t) ? `<button class="o_btn o_btn_primary o_btn_sm" data-confirm-return="${t.id}">${tx('تأكيد المرتجع', 'Confirm return')}</button>` : ''}
+          ${IN_TRANSIT.includes(t.status) && canRejectTransferReceipt(t) ? `<button class="o_btn o_btn_danger o_btn_sm" data-reject="${t.id}" title="${tx('رفض الاستلام', 'Reject receipt')}"><i class="fa-solid fa-xmark"></i></button>` : ''}
         </div>`
       ]
     })),
@@ -187,7 +183,8 @@ function bind(_params, main) {
   main.querySelectorAll('[data-reject]').forEach(b => b.onclick = () => rejectReceipt(b.dataset.reject));
   main.querySelectorAll('[data-review]').forEach(b => b.onclick = () => reviewReturn(b.dataset.review));
   main.querySelectorAll('[data-confirm-return]').forEach(b => b.onclick = async () => {
-    if (!canConfirmTransferReturn()) { toast(tx('لا تملك صلاحية تأكيد استلام المرتجع.', 'You are not authorized to confirm returned transfers.'), 'warning'); return; }
+    const transfer = store.byId('stock_transfers', b.dataset.confirmReturn);
+    if (!transfer || !canConfirmTransferReturn(transfer)) { toast(tx('لا تملك صلاحية تأكيد استلام هذا المرتجع.', 'You are not authorized to confirm this returned transfer.'), 'warning'); return; }
     if (!await confirmDialog({
       title: tx('تأكيد المرتجع', 'Confirm return'),
       message: tx('سيتم إرجاع الكمية المتبقية إلى المستودع المصدر.', 'The remaining quantity will be returned to the source warehouse.'),
@@ -351,6 +348,9 @@ function openNewTransfer() {
       el.querySelector('#trfSave').onclick = async () => {
         try {
           const d = Object.fromEntries(new FormData(el.querySelector('#trfForm')).entries());
+          if (!canCreateTransfer(d.source_warehouse_id, d.destination_warehouse_id, dispatchOrderId)) {
+            throw new Error(tx('لا تملك تفويض إنشاء تحويل بين هذين المستودعين.', 'You do not have a transfer-create grant for both selected warehouses.'));
+          }
           if (d.source_warehouse_id === d.destination_warehouse_id && lines.some(l => !l.destination_shelf_id)) {
             throw new Error(tx('التحويل داخل نفس المستودع يتطلب رف وجهة لكل سطر',
               'Same-warehouse transfer requires a destination shelf on every line'));
@@ -461,9 +461,9 @@ function openOrder(id) {
 /* ── receive ────────────────────────────────────────────────────────────── */
 
 function openReceive(id) {
-  if (!canReceiveTransfer()) { toast(tx('لا تملك صلاحية الاستلام.', 'You are not authorized to receive transfers.'), 'warning'); return; }
   const t = store.byId('stock_transfers', id);
   if (!t) return;
+  if (!canReceiveTransfer(t)) { toast(tx('لا تملك صلاحية الاستلام في مستودع الوجهة.', 'You are not authorized to receive into this destination warehouse.'), 'warning'); return; }
   const receiptOperationId = uid();
   const remaining = Math.max(0, Number(t.quantity || 0) - Number(t.received_quantity || 0));
   const shelves = shelfOptions({ warehouseId: t.destination_warehouse_id });
@@ -478,7 +478,7 @@ function openReceive(id) {
       ${input({ name: 'received_quantity', label: `${tx('الكمية المستلمة الآن', 'Received now')} (${baseUnitOf(t)})`, type: 'number', value: remaining, required: true, attrs: `min="0" max="${remaining}" step="any"` })}
       ${select({ name: 'destination_shelf_id', label: tx('رف الوجهة', 'Destination shelf'), options: shelves, value: t.destination_shelf_id || '', required: true, placeholder: tx('اختر رفًا', 'Select shelf') })}
       ${input({ name: 'batch_no', label: tx('التشغيلة (اختياري)', 'Batch (optional)'), value: t.batch_no || '', attrs: 'disabled' })}
-${canCreateTransferReturn() ? `      <div class="o_field full"><label class="o_checkbox"><input type="checkbox" name="return_remaining" ${remaining <= 0 ? 'checked' : ''}> ${tx('إرجاع الكمية المتبقية إلى المصدر', 'Return remaining quantity to source')}</label></div>
+${canCreateTransferReturn(t) ? `      <div class="o_field full"><label class="o_checkbox"><input type="checkbox" name="return_remaining" ${remaining <= 0 ? 'checked' : ''}> ${tx('إرجاع الكمية المتبقية إلى المصدر', 'Return remaining quantity to source')}</label></div>
       ${textarea({ name: 'reason', label: tx('سبب الإرجاع (مطلوب عند إرجاع المتبقي)', 'Return reason (required when returning remainder)'), rows: 2 })}` : ''}
     </form>`;
   modal({
@@ -507,7 +507,9 @@ ${canCreateTransferReturn() ? `      <div class="o_field full"><label class="o_c
 }
 
 async function rejectReceipt(id) {
-  if (!canRejectTransferReceipt()) { toast(tx('لا تملك صلاحية رفض الاستلام.', 'You are not authorized to reject transfer receipts.'), 'warning'); return; }
+  const transfer = store.byId('stock_transfers', id);
+  if (!transfer) return;
+  if (!canRejectTransferReceipt(transfer)) { toast(tx('لا تملك صلاحية رفض استلام هذا التحويل.', 'You are not authorized to reject this transfer receipt.'), 'warning'); return; }
   const reason = await promptDialog({
     title: tx('رفض الاستلام', 'Reject receipt'),
     label: tx('سبب الرفض', 'Rejection reason'), required: true, multiline: true,
@@ -522,9 +524,10 @@ async function rejectReceipt(id) {
 }
 
 async function reviewReturn(id) {
-  if (!canReviewTransferReturn()) { toast(tx('لا تملك صلاحية مراجعة المرتجعات.', 'You are not authorized to review transfer returns.'), 'warning'); return; }
   const t = store.byId('stock_transfers', id);
-  const qty = Number(t?.return_requested_quantity || 0);
+  if (!t) return;
+  if (!canReviewTransferReturn(t)) { toast(tx('لا تملك صلاحية مراجعة طلب الإرجاع في مستودع المصدر.', 'You are not authorized to review this return request at the source warehouse.'), 'warning'); return; }
+  const qty = Number(t.return_requested_quantity || 0);
   const decision = await new Promise(resolve => {
     let settled = false;
     const done = v => { if (settled) return; settled = true; m.close(); resolve(v); };
