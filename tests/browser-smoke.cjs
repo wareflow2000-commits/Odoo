@@ -567,23 +567,35 @@ const fs = require('fs');
       const userAssignmentNarrowsAll = store.data.warehouses.length === 1
         && store.data.warehouses[0].id === w2 && accessibleWarehouseIds().length === 1;
 
-      window.__session.role = 'SUPER_ADMIN';
-      window.__session.profile.role = 'SUPER_ADMIN';
+      window.__session.role = 'ADMIN';
+      window.__session.profile.role = 'ADMIN';
       window.__session.profile.assigned_warehouse_ids = [];
-      store.data.role_warehouse_scopes = [{ role_name: 'SUPER_ADMIN', scope_mode: 'INHERIT', warehouse_ids: [] }];
+      store.data.role_warehouse_scopes = [{ role_name: 'ADMIN', scope_mode: 'INHERIT', warehouse_ids: [] }];
       reset();
       applyAccessFilter();
-      const legacyAdminInherit = store.data.warehouses.length === 3 && accessibleWarehouseIds() === null;
+      const adminInheritFailsClosed = store.data.warehouses.length === 0
+        && accessibleWarehouseIds().length === 0 && !canAccessWarehouse(w1);
 
       store.scopeConfigLoaded = false;
+      window.__session.role = 'MANAGER';
+      window.__session.profile.role = 'MANAGER';
       reset();
       applyAccessFilter();
       const missingScopeFailsClosed = store.data.warehouses.length === 0
         && accessibleWarehouseIds().length === 0 && !canAccessWarehouse(w1);
 
       store.scopeConfigLoaded = true;
+      window.__session.role = 'SUPER_ADMIN';
+      window.__session.profile.role = 'SUPER_ADMIN';
+      window.__session.profile.assigned_warehouse_ids = [w1];
+      store.data.role_warehouse_scopes = [{ role_name: 'SUPER_ADMIN', scope_mode: 'SELECTED', warehouse_ids: [w1] }];
+      reset();
+      applyAccessFilter();
+      const superAdminGlobalBreakGlass = store.data.warehouses.length === 3
+        && accessibleWarehouseIds() === null && canAccessWarehouse(w3);
+
       return { permissionRoleContract, selectedRole, assignmentIntersection, inheritFailsClosed, explicitAll,
-        userAssignmentNarrowsAll, legacyAdminInherit, missingScopeFailsClosed };
+        userAssignmentNarrowsAll, adminInheritFailsClosed, missingScopeFailsClosed, superAdminGlobalBreakGlass };
     });
     const scopeFailures = Object.entries(warehouseScopeChecks).filter(([, value]) => value !== true);
     if (scopeFailures.length) throw new Error('Warehouse scope checks failed: ' + JSON.stringify(warehouseScopeChecks));
