@@ -94,6 +94,17 @@ const fs = require('fs');
       const multiWarehouseDenied = !offlineWarehouseAllowed(warehouseId);
       window.__session.profile.assigned_warehouse_ids = [warehouseId];
       const saved = await saveStocktakeCount(lineId, 2, 'BOX');
+      // Offline ownership must mirror the database creator-or-manager rule.
+      // ADMIN and WAREHOUSE_MANAGER are not current_user_is_manager() roles.
+      const originalCreator = store.data.stocktake_sessions[0].created_by;
+      const originalRole = window.__session.role;
+      store.data.stocktake_sessions[0].created_by = '88888888-8888-4888-8888-888888888888';
+      window.__session.role = 'ADMIN';
+      const adminCannotCountAnotherUsersSession = await expectBlocked(() => saveStocktakeCount(lineId, 3, 'BOX'));
+      window.__session.role = 'WAREHOUSE_MANAGER';
+      const warehouseManagerCannotCountAnotherUsersSession = await expectBlocked(() => saveStocktakeCount(lineId, 3, 'BOX'));
+      store.data.stocktake_sessions[0].created_by = originalCreator;
+      window.__session.role = originalRole;
       const queued = queueSnapshot().some(row =>
         row.source === 'stocktake' && row.status === 'PENDING'
       );
@@ -127,6 +138,8 @@ const fs = require('fs');
         multiWarehouseDenied, blockedMasterWrites: blockedMasterWrites.every(Boolean),
         legacyMasterQuarantined, legacyQueueBlocksFurtherOfflineWork, noOptimisticMasterWrite,
         countQueued: !!saved.pending_sync && queued,
+        adminCannotCountAnotherUsersSession,
+        warehouseManagerCannotCountAnotherUsersSession,
         convertedBaseQuantity: saved.counted_qty,
         queueOwnerMatches: queueRows.length === 1 && queueRows[0].user_id === userId
       };
@@ -527,7 +540,7 @@ const fs = require('fs');
     if (scopeFailures.length) throw new Error('Warehouse scope checks failed: ' + JSON.stringify(warehouseScopeChecks));
 
     if (errors.length) throw new Error('Browser errors:\\n' + errors.join('\\n'));
-    console.log('PASS: login desktop/mobile smoke; no browser errors; offline policy allows ISSUE and stocktake counts only; master-data writes are rejected and legacy master queue is quarantined; single-warehouse scope enforced; multi-warehouse offline denied; stocktake count queued locally with BOX x12 = 24 PCS and bound to its creator; refresh/fetch-failure cache preservation; conversion conflict; corrected-factor sync exactly once; foreign-user cached snapshot rejected; role SELECTED/ALL/INHERIT scopes and user-assignment intersections enforced in UI.');
+    console.log('PASS: login desktop/mobile smoke; no browser errors; offline policy allows ISSUE and stocktake counts only; only database manager roles can count another user's session offline; master-data writes are rejected and legacy master queue is quarantined; single-warehouse scope enforced; multi-warehouse offline denied; stocktake count queued locally with BOX x12 = 24 PCS and bound to its creator; refresh/fetch-failure cache preservation; conversion conflict; corrected-factor sync exactly once; foreign-user cached snapshot rejected; role SELECTED/ALL/INHERIT scopes and user-assignment intersections enforced in UI.');
   } catch (error) {
     fs.mkdirSync('test-results', { recursive: true });
     await page.screenshot({ path: 'test-results/failure.png', fullPage: true }).catch(() => {});
