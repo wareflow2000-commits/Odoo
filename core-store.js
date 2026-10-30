@@ -53,7 +53,7 @@ export const TABLES = [
   'role_permissions', 'role_warehouse_scopes', 'archive_movements', 'archive_balances', 'sync_log'
 ];
 
-export const ELEVATED_ROLES = ['SUPER_ADMIN', 'ADMIN', 'MANAGER', 'WAREHOUSE_MANAGER'];
+export const ELEVATED_ROLES = ['SUPER_ADMIN'];
 
 export const store = {
   data: Object.fromEntries(TABLES.map(t => [t, []])),
