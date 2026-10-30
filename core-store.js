@@ -23,7 +23,7 @@ const STOCKTAKE_COUNT_QUEUE_PREFIX = 'orshap_stocktake_count_queue_v1:';
 // Supabase surfaces transport failures as several different messages depending
 // on browser/fetch implementation. Treat them all as "queue it and retry later",
 // never as a validation error the user has to manually recreate.
-const NETWORK_ERROR_RE = /failed to fetch|fetch failed|networkerror|network request failed|load failed|network connection|connection (?:lost|failed|reset)|econn(?:refused|reset|aborted)|enotfound|socket hang up|timed? ?out|(?:^|\\b)(?:no internet connection|internet connection lost|device is offline|browser is offline)(?:\\b|$)/i;
+const NETWORK_ERROR_RE = /failed to fetch|fetch failed|networkerror|network request failed|load failed|network connection|connection (?:lost|failed|reset)|econn(?:refused|reset|aborted)|enotfound|socket hang up|timed? ?out|(?:^|\b)(?:no internet connection|internet connection lost|device is offline|browser is offline)(?:\b|$)/i;
 const isNetworkFailure = error => NETWORK_ERROR_RE.test(String(error?.message ?? error ?? ''));
 const hasLiveSession = () => !!window.__session?.id && !window.__session.offline;
 const requireLiveConnection = (ar, en) => {
