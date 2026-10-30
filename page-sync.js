@@ -34,7 +34,7 @@ function render() {
       : window.__session?.offline
         ? alertBox(tx('جلستك محفوظة محليًا. ستحاول المزامنة استعادة جلسة الخادم تلقائيًا؛ إذا فشلت فسجّل الدخول عبر الإنترنت مرة واحدة.',
           'Your session is local. Sync will try to restore the server session automatically; if that fails, sign in online once.'), 'warning')
-        : alertBox(tx('العمليات المعلّقة تُرسل بالترتيب. تبقى البيانات المحلية متاحة دائمًا.',
+        : alertBox(tx('تُزامن سندات الصرف وعدّ الجرد المعلّقة بعد التحقق من المستخدم والمستودع ونوع العملية.',
           'Pending ISSUE vouchers and stocktake counts sync only after user, warehouse and operation-type validation.'), 'info')}
     ${legacyMasterBlocked ? alertBox(tx('توجد تعديلات بيانات رئيسية من إصدار سابق. تم عزلها ولن تُرسل تلقائيًا؛ راجعها وأعد إدخال ما يلزم أثناء الاتصال.',
       'Legacy master-data edits from an older version were quarantined and will not be sent. Review and re-enter required changes while online.'), 'warning') : ''}
