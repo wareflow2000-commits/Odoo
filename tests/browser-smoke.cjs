@@ -480,19 +480,25 @@ const fs = require('fs');
           'action:stocktake:start', 'action:transaction:issue:create',
           'page:inventory:access', 'action:stocktake:view_system_qty',
           'action:transaction:approve', 'action:settings:manage',
-          'action:transaction:opening_balance:create'
+          'action:transaction:opening_balance:create', 'action:chat:manage',
+          'table:inventory_ledger:view', 'table:transaction_ledger:view', 'table:audit_logs:view'
         ] }
       };
       store.authorizationPermissions = [
         'action:stocktake:start', 'action:transaction:issue:create',
         'page:inventory:access', 'action:stocktake:view_system_qty',
         'action:transaction:approve', 'action:settings:manage',
-        'action:transaction:opening_balance:create'
+        'action:transaction:opening_balance:create', 'action:chat:manage',
+        'table:inventory_ledger:view', 'table:transaction_ledger:view', 'table:audit_logs:view'
       ];
       const warehouseManagerExplicitGrant = canDatabasePermission('action:stocktake:start')
         && can('action:transaction:issue:create') && canAccessPage('inventory')
         && canCreateTransactionType('ISSUE') && canViewSystemQty() && canApproveTransactions()
-        && canManageSystemSettings();
+        && canManageSystemSettings()
+        && canDatabasePermission('action:chat:manage')
+        && canDatabasePermission('table:inventory_ledger:view')
+        && canDatabasePermission('table:transaction_ledger:view')
+        && canDatabasePermission('table:audit_logs:view');
       window.__session = {
         id: 'role-contract-wildcard',
         role: 'WAREHOUSE_MANAGER',
