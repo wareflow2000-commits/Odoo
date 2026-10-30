@@ -212,6 +212,82 @@ BEGIN
 END;
 $status_patch$;
 
+
+DO $dispatch_wrapper_patch$
+DECLARE
+  d text;
+  n text;
+  decl_old text := '  v_source_tx uuid;' || E'\n' || '  v_st_item uuid;';
+  decl_new text := '  v_source_tx uuid;' || E'\n' ||
+    '  v_destination_tx uuid;' || E'\n' ||
+    '  v_st_item uuid;';
+  qty_anchor text := '    v_base_qty := v_entered * v_factor;';
+  qty_new text := qty_anchor || E'\n' ||
+    '    IF NULLIF(v_line->>''transfer_id'','''') IS NULL THEN' || E'\n' ||
+    '      RAISE EXCEPTION ''TRANSFER_ID_REQUIRED: each transfer line must carry a stable id for safe retries'' USING ERRCODE=''22023'';' || E'\n' ||
+    '    END IF;';
+  select_old text := '    SELECT st.source_transaction_id, st.item_id, st.quantity, st.base_unit' || E'\n' ||
+    '    INTO v_source_tx, v_st_item, v_st_qty, v_st_base';
+  select_new text := '    SELECT st.source_transaction_id, st.destination_transaction_id, st.item_id, st.quantity, st.base_unit' || E'\n' ||
+    '    INTO v_source_tx, v_destination_tx, v_st_item, v_st_qty, v_st_base';
+  source_end text := '      WHERE tl.transaction_id = v_source_tx' || E'\n' ||
+    '        AND tl.item_id = v_st_item' || E'\n' ||
+    '        AND (tl.details->>''transfer_id'' IS NULL' || E'\n' ||
+    '             OR tl.details->>''transfer_id'' = v_transfer_id::text);' || E'\n' ||
+    '    END IF;';
+  source_end_new text := '      WHERE tl.transaction_id = v_source_tx' || E'\n' ||
+    '        AND tl.item_id = v_st_item' || E'\n' ||
+    '        AND (tl.details->>''transfer_id'' IS NULL' || E'\n' ||
+    '             OR tl.details->>''transfer_id'' = v_transfer_id::text);' || E'\n' ||
+    '    END IF;' || E'\n' ||
+    '    IF v_destination_tx IS NOT NULL THEN' || E'\n' ||
+    '      UPDATE public.inventory_ledger l' || E'\n' ||
+    '      SET metadata = COALESCE(l.metadata, ''{}''::jsonb) || jsonb_build_object(' || E'\n' ||
+    '        ''entered_quantity'', (v_line->>''entered_quantity'')::numeric,' || E'\n' ||
+    '        ''entered_unit'', v_line->>''entered_unit'',' || E'\n' ||
+    '        ''conversion_factor'', (v_line->>''conversion_factor'')::numeric,' || E'\n' ||
+    '        ''base_quantity'', v_st_qty,' || E'\n' ||
+    '        ''base_unit'', v_st_base' || E'\n' ||
+    '      )' || E'\n' ||
+    '      WHERE l.source_id = v_destination_tx AND l.item_id = v_st_item' || E'\n' ||
+    '        AND (l.metadata->>''transfer_id'' IS NULL OR l.metadata->>''transfer_id'' = v_transfer_id::text);' || E'\n' ||
+    '      UPDATE public.transaction_ledger tl' || E'\n' ||
+    '      SET details = COALESCE(tl.details, ''{}''::jsonb) || jsonb_build_object(' || E'\n' ||
+    '        ''entered_quantity'', (v_line->>''entered_quantity'')::numeric,' || E'\n' ||
+    '        ''entered_unit'', v_line->>''entered_unit'',' || E'\n' ||
+    '        ''conversion_factor'', (v_line->>''conversion_factor'')::numeric,' || E'\n' ||
+    '        ''base_quantity'', v_st_qty,' || E'\n' ||
+    '        ''base_unit'', v_st_base' || E'\n' ||
+    '      )' || E'\n' ||
+    '      WHERE tl.transaction_id = v_destination_tx AND tl.item_id = v_st_item' || E'\n' ||
+    '        AND (tl.details->>''transfer_id'' IS NULL OR tl.details->>''transfer_id'' = v_transfer_id::text);' || E'\n' ||
+    '    END IF;';
+BEGIN
+  SELECT pg_get_functiondef(
+    'public.dispatch_stock_transfer_order_v3(uuid,text,uuid,uuid,jsonb,text)'::regprocedure
+  ) INTO d;
+
+  IF position(decl_new IN d)=0 THEN
+    IF position(decl_old IN d)=0 THEN RAISE EXCEPTION 'Dispatch v3 destination transaction declaration anchor not found'; END IF;
+    d:=replace(d,decl_old,decl_new);
+  END IF;
+  IF position(qty_new IN d)=0 THEN
+    IF position(qty_anchor IN d)=0 THEN RAISE EXCEPTION 'Dispatch v3 stable transfer id anchor not found'; END IF;
+    d:=replace(d,qty_anchor,qty_new);
+  END IF;
+  IF position(select_new IN d)=0 THEN
+    IF position(select_old IN d)=0 THEN RAISE EXCEPTION 'Dispatch v3 destination transaction lookup anchor not found'; END IF;
+    d:=replace(d,select_old,select_new);
+  END IF;
+  IF position('WHERE tl.transaction_id = v_destination_tx' IN d)=0 THEN
+    IF position(source_end IN d)=0 THEN RAISE EXCEPTION 'Dispatch v3 destination ledger metadata anchor not found'; END IF;
+    d:=replace(d,source_end,source_end_new);
+  END IF;
+
+  EXECUTE d;
+END;
+$dispatch_wrapper_patch$;
+
 DO $verify$
 DECLARE
   d text;
@@ -235,6 +311,15 @@ BEGIN
   IF position('DISPATCH_ORDER' IN d)=0
      OR position('stock_transfer_order' IN d)=0 THEN
     RAISE EXCEPTION 'Transfer dispatch status authorization verification failed';
+  END IF;
+
+  SELECT pg_get_functiondef(
+    'public.dispatch_stock_transfer_order_v3(uuid,text,uuid,uuid,jsonb,text)'::regprocedure
+  ) INTO d;
+  IF position('TRANSFER_ID_REQUIRED' IN d)=0
+     OR position('v_destination_tx' IN d)=0
+     OR position('WHERE tl.transaction_id = v_destination_tx' IN d)=0 THEN
+    RAISE EXCEPTION 'Transfer dispatch unit snapshot persistence verification failed';
   END IF;
 END;
 $verify$;
