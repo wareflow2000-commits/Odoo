@@ -85,7 +85,8 @@ const roleOf = () => String(window.__session?.role || '').toUpperCase();
 const isElevated = () => ELEVATED_ROLES.includes(roleOf());
 
 export function offlineTransactionTypeAllowed(type) {
-  return OFFLINE_TX_TYPES.has(String(type || '').toUpperCase());
+  return !store.legacyMasterDataNeedsRefresh
+    && OFFLINE_TX_TYPES.has(String(type || '').toUpperCase());
 }
 
 export function offlineWarehouseAllowed(warehouseId) {
