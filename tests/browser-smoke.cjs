@@ -302,7 +302,23 @@ const fs = require('fs');
 
     const warehouseScopeChecks = await page.evaluate(async () => {
       const { store, applyAccessFilter } = await import('/core-store.js');
-      const { accessibleWarehouseIds, canAccessWarehouse } = await import('/core-rbac.js');
+      const { accessibleWarehouseIds, canAccessWarehouse, canManageSystemSettings, canAdministerProfiles } = await import('/core-rbac.js');
+      const originalSession = window.__session;
+      const roleContract = {};
+      for (const role of ['SUPER_ADMIN', 'MANAGER', 'ADMIN', 'WAREHOUSE_MANAGER', 'CLERK']) {
+        window.__session = { id: 'role-contract-test', role, profile: { role } };
+        roleContract[role] = {
+          profiles: canAdministerProfiles(),
+          systemSettings: canManageSystemSettings()
+        };
+      }
+      window.__session = originalSession;
+      const permissionRoleContract = roleContract.SUPER_ADMIN.profiles
+        && roleContract.SUPER_ADMIN.systemSettings
+        && !roleContract.MANAGER.profiles && roleContract.MANAGER.systemSettings
+        && !roleContract.ADMIN.profiles && !roleContract.ADMIN.systemSettings
+        && !roleContract.WAREHOUSE_MANAGER.profiles && !roleContract.WAREHOUSE_MANAGER.systemSettings
+        && !roleContract.CLERK.profiles && !roleContract.CLERK.systemSettings;
       const w1 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
       const w2 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2';
       const w3 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3';
@@ -378,7 +394,7 @@ const fs = require('fs');
         && accessibleWarehouseIds().length === 0 && !canAccessWarehouse(w1);
 
       store.scopeConfigLoaded = true;
-      return { selectedRole, assignmentIntersection, inheritFailsClosed, explicitAll,
+      return { permissionRoleContract, selectedRole, assignmentIntersection, inheritFailsClosed, explicitAll,
         userAssignmentNarrowsAll, legacyAdminInherit, missingScopeFailsClosed };
     });
     const scopeFailures = Object.entries(warehouseScopeChecks).filter(([, value]) => value !== true);
