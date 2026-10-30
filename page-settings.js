@@ -181,7 +181,7 @@ const FALLBACK_PERMISSIONS = [
 
 function canManage() { return canManageSettings(); }
 
-function canManageImportEntity(entity, action = 'create', existing = null) {
+function canManageImportEntity(entity, action = 'create', existing = null, row = null) {
   if (entity === 'warehouses') {
     if (action === 'create') {
       const assigned = window.__session?.profile?.assigned_warehouse_ids;
@@ -193,8 +193,9 @@ function canManageImportEntity(entity, action = 'create', existing = null) {
       && (!existing || canAccessWarehouse(existing.id));
   }
   if (entity === 'storage_areas' || entity === 'shelves') {
+    const warehouseId = existing?.warehouse_id || row?._warehouse_id || null;
     return can('action:facility:manage')
-      && (!existing || canAccessWarehouse(existing.warehouse_id));
+      && (!warehouseId || canAccessWarehouse(warehouseId));
   }
   if (entity === 'items') {
     return can(action === 'update' ? 'action:item:update' : 'action:item:create');
@@ -939,7 +940,7 @@ async function applyImport() {
   const deniedRow = prepared.find(row => {
     const existing = importFindExisting(x.entity, row);
     if (existing && !x.updateExisting) return false;
-    return !canManageImportEntity(x.entity, existing ? 'update' : 'create', existing);
+    return !canManageImportEntity(x.entity, existing ? 'update' : 'create', existing, row);
   });
   if (deniedRow) {
     F.import.result = {
