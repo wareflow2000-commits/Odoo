@@ -117,6 +117,13 @@ BEGIN
 END;
 $migration$;
 
+-- Permit the short-lived context used only by the guarded receipt writer.
+ALTER TABLE public.wms_transfer_scope_context
+  DROP CONSTRAINT IF EXISTS wms_transfer_scope_context_context_type_check;
+ALTER TABLE public.wms_transfer_scope_context
+  ADD CONSTRAINT wms_transfer_scope_context_context_type_check
+  CHECK (context_type = ANY (ARRAY['REJECT_RECEIPT'::text,'FINALIZE_SOURCE'::text,'RECEIVE_RECEIPT'::text]));
+
 DO $verify$
 DECLARE
   d text;
