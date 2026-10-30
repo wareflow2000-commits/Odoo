@@ -101,6 +101,10 @@ const fs = require('fs');
       // with an explicit grant may count a session created by another user.
       const originalCreator = store.data.stocktake_sessions[0].created_by;
       const originalRole = window.__session.role;
+      const originalCountLine = { ...store.data.stocktake_lines[0] };
+      const countCacheSnapshot = localStorage.getItem('orshap_wms_data_v5');
+      const countQueueKey = Object.keys(localStorage).find(key => key.startsWith('orshap_stocktake_count_queue_v1:'));
+      const countQueueSnapshot = countQueueKey ? localStorage.getItem(countQueueKey) : null;
       store.data.stocktake_sessions[0].created_by = '88888888-8888-4888-8888-888888888888';
       store.authorizationPermissions = [];
       window.__session.role = 'ADMIN';
@@ -112,8 +116,11 @@ const fs = require('fs');
       store.authorizationPermissions = ['action:stocktake:count'];
       const delegatedCounterAllowed = await saveStocktakeCount(lineId, 4, 'BOX');
       store.data.stocktake_sessions[0].created_by = originalCreator;
+      Object.assign(store.data.stocktake_lines[0], originalCountLine);
       window.__session.role = originalRole;
       store.authorizationPermissions = originalAuthorizationPermissions;
+      if (countCacheSnapshot !== null) localStorage.setItem('orshap_wms_data_v5', countCacheSnapshot);
+      if (countQueueKey && countQueueSnapshot !== null) localStorage.setItem(countQueueKey, countQueueSnapshot);
       const queued = queueSnapshot().some(row =>
         row.source === 'stocktake' && row.status === 'PENDING'
       );
