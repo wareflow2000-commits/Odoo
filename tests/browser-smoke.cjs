@@ -110,6 +110,46 @@ const fs = require('fs');
         enteredUnitRestored: line?.entered_unit === 'BOX',
         pendingCountRestored: pending
       };
+      // A required remote pull failure must preserve the already-loaded local
+      // snapshot and its pending count overlay. This uses a mocked transport:
+      // no Supabase write or production inventory mutation is possible.
+      const { pullAll } = await import('/core-store.js');
+      const cachedWarehouse = { id: 'cached-warehouse-sentinel', name: 'cached warehouse' };
+      store.data.warehouses = [cachedWarehouse];
+      store.loaded = true;
+      window.__session.offline = false;
+      Object.defineProperty(navigator, 'onLine', { configurable: true, value: true });
+      window.orshapSupabaseReady = Promise.resolve({
+        from(table) {
+          return {
+            select() {
+              if (table === 'warehouses') {
+                return Promise.resolve({ data: null, error: { message: 'network request failed' } });
+              }
+              return Promise.resolve({ data: store.data[table] || [], error: null });
+            }
+          };
+        },
+        async rpc(name) {
+          if (name === 'list_stocktake_lines_secure') {
+            return { data: store.data.stocktake_lines, error: null };
+          }
+          return { data: null, error: null };
+        }
+      });
+      let pullFailedAsExpected = false;
+      try { await pullAll({ silent: true }); }
+      catch (error) { pullFailedAsExpected = /warehouses: network request failed/i.test(error.message); }
+      const lineAfterFailedPull = store.data.stocktake_lines.find(x =>
+        x.id === '44444444-4444-4444-8444-444444444444'
+      );
+      refreshChecks.remotePullFailurePreservedCache =
+        pullFailedAsExpected
+        && store.data.warehouses.length === 1
+        && store.data.warehouses[0].id === cachedWarehouse.id
+        && lineAfterFailedPull?.counted_qty === 24
+        && queueSnapshot().some(row => row.source === 'stocktake' && row.status === 'PENDING');
+
       // Now test account isolation after preserving and validating the real snapshot.
       localStorage.setItem('orshap_wms_data_v5', JSON.stringify({
         __cached_user_id: '77777777-7777-4777-8777-777777777777',
