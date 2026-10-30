@@ -93,11 +93,31 @@ const fs = require('fs');
         key.startsWith('orshap_stocktake_count_queue_v1:')
       );
       const queueRows = queueKey ? JSON.parse(localStorage.getItem(queueKey)) : [];
+      const originalSession = window.__session;
+      const legacyUserId = '77777777-7777-4777-8777-777777777777';
+      window.__session = {
+        id: legacyUserId, role: 'CLERK', offline: true,
+        profile: { id: legacyUserId, assigned_warehouse_ids: [warehouseId] }
+      };
+      localStorage.setItem('orshap_master_outbox_v1:' + legacyUserId, JSON.stringify([{
+        operation_id: 'legacy-master-fixture', kind: 'insert', table: 'items',
+        id: '99999999-9999-4999-8999-999999999999',
+        row: { id: '99999999-9999-4999-8999-999999999999', code: 'LEGACY-OFFLINE' },
+        status: 'PENDING'
+      }]));
+      const legacyQueueRows = queueSnapshot().filter(row => row.source === 'blocked_master');
+      const legacyMasterQuarantined = !localStorage.getItem('orshap_master_outbox_v1:' + legacyUserId)
+        && legacyQueueRows.length === 1 && legacyQueueRows[0].status === 'CONFLICT'
+        && JSON.parse(localStorage.getItem('orshap_master_outbox_quarantine_v1:' + legacyUserId) || '[]').length === 1;
+      const legacyQueueBlocksFurtherOfflineWork = store.legacyMasterDataNeedsRefresh
+        && !offlineWarehouseAllowed(warehouseId);
+      window.__session = originalSession;
+      queueSnapshot();
 
       return {
         issueAllowed, receiptDenied, assignedWarehouseAllowed, otherWarehouseDenied,
         multiWarehouseDenied, blockedMasterWrites: blockedMasterWrites.every(Boolean),
-        legacyMasterQuarantined, noOptimisticMasterWrite,
+        legacyMasterQuarantined, legacyQueueBlocksFurtherOfflineWork, noOptimisticMasterWrite,
         countQueued: !!saved.pending_sync && queued,
         convertedBaseQuantity: saved.counted_qty,
         queueOwnerMatches: queueRows.length === 1 && queueRows[0].user_id === userId
