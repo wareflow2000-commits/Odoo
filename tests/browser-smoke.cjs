@@ -302,23 +302,36 @@ const fs = require('fs');
 
     const warehouseScopeChecks = await page.evaluate(async () => {
       const { store, applyAccessFilter } = await import('/core-store.js');
-      const { accessibleWarehouseIds, canAccessWarehouse, canManageSystemSettings, canAdministerProfiles } = await import('/core-rbac.js');
+      const { accessibleWarehouseIds, canAccessWarehouse, canManageSystemSettings, canAdministerProfiles, canDatabasePermission } = await import('/core-rbac.js');
       const originalSession = window.__session;
       const roleContract = {};
       for (const role of ['SUPER_ADMIN', 'MANAGER', 'ADMIN', 'WAREHOUSE_MANAGER', 'CLERK']) {
         window.__session = { id: 'role-contract-test', role, profile: { role } };
         roleContract[role] = {
           profiles: canAdministerProfiles(),
-          systemSettings: canManageSystemSettings()
+          systemSettings: canManageSystemSettings(),
+          stocktakeStart: canDatabasePermission('action:stocktake:start')
         };
       }
+      window.__session = {
+        id: 'role-contract-custom',
+        role: 'WAREHOUSE_MANAGER',
+        profile: { role: 'WAREHOUSE_MANAGER', custom_permissions: ['action:stocktake:start'] }
+      };
+      const warehouseManagerExplicitGrant = canDatabasePermission('action:stocktake:start');
       window.__session = originalSession;
       const permissionRoleContract = roleContract.SUPER_ADMIN.profiles
         && roleContract.SUPER_ADMIN.systemSettings
         && !roleContract.MANAGER.profiles && roleContract.MANAGER.systemSettings
         && !roleContract.ADMIN.profiles && !roleContract.ADMIN.systemSettings
         && !roleContract.WAREHOUSE_MANAGER.profiles && !roleContract.WAREHOUSE_MANAGER.systemSettings
-        && !roleContract.CLERK.profiles && !roleContract.CLERK.systemSettings;
+        && !roleContract.CLERK.profiles && !roleContract.CLERK.systemSettings
+        && roleContract.SUPER_ADMIN.stocktakeStart
+        && roleContract.MANAGER.stocktakeStart
+        && roleContract.ADMIN.stocktakeStart
+        && !roleContract.WAREHOUSE_MANAGER.stocktakeStart
+        && !roleContract.CLERK.stocktakeStart
+        && warehouseManagerExplicitGrant;
       const w1 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
       const w2 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2';
       const w3 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3';
