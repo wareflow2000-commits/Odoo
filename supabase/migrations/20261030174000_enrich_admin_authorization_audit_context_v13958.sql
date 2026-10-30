@@ -81,6 +81,8 @@ BEGIN
 
   IF position('requested_can_approve_without_workflow' IN profile_def)=0
      OR position('requested_assigned_warehouse_ids' IN profile_def)=0
+     OR position('to_jsonb(p_assigned_warehouse_ids)' IN profile_def)=0
+     OR position('to_jsonb(COALESCE(p_assigned_warehouse_ids' IN profile_def)>0
      OR position('requested_role' IN link_def)=0
      OR position('requested_warehouse_ids' IN warehouse_def)=0
      OR position('requested_permission_keys' IN role_config_def)=0
