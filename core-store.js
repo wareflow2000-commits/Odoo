@@ -67,6 +67,8 @@ export const store = {
   error: null,
   authorizationPermissions: [],
   authorizationPermissionsUserId: null,
+  authorizationGrantRows: [],
+  authorizationGrantRowsUserId: null,
   listeners: new Set(),
   get(table) { return this.data[table] || (this.data[table] = []); },
   byId(table, id) { return this.get(table).find(r => r.id === id) || null; },
@@ -113,13 +115,47 @@ export function offlineWarehouseAllowed(warehouseId) {
   return true;
 }
 
+function objectContainsContext(actual, expected) {
+  if (!expected || typeof expected !== 'object' || Array.isArray(expected)) return true;
+  if (!actual || typeof actual !== 'object' || Array.isArray(actual)) return false;
+  return Object.entries(expected).every(([key, value]) => {
+    const current = actual[key];
+    if (value && typeof value === 'object' && !Array.isArray(value)) return objectContainsContext(current, value);
+    if (Array.isArray(value)) return Array.isArray(current) && value.every(v => current.includes(v));
+    return current === value;
+  });
+}
+
+export function hasEffectiveCachedGrant(permissionKey, context = {}) {
+  const user = window.__session;
+  if (!user?.id || !permissionKey) return false;
+  if (String(user.role || user.profile?.role || '').toUpperCase() === 'SUPER_ADMIN') return true;
+  if (store.authorizationGrantRowsUserId !== user.id) return false;
+  const matches = store.authorizationGrantRows.filter(grant => {
+    if (grant.permission_key !== permissionKey) return false;
+    if (grant.resource_type && grant.resource_type !== context.resource_type) return false;
+    if (grant.resource_id && grant.resource_id !== context.resource_id) return false;
+    if (grant.warehouse_id && grant.warehouse_id !== context.warehouse_id) return false;
+    if (grant.valid_from && new Date(grant.valid_from).getTime() > Date.now()) return false;
+    if (grant.valid_until && new Date(grant.valid_until).getTime() <= Date.now()) return false;
+    if (!objectContainsContext(context, grant.conditions || {})) return false;
+    const scope = String(grant.scope_type || 'ALL').toUpperCase();
+    if (scope === 'OWN') return context.owner_id === user.id;
+    if (scope === 'WAREHOUSE') return !!grant.warehouse_id && context.warehouse_id === grant.warehouse_id;
+    if (scope === 'CONTEXT') return objectContainsContext(context, grant.conditions || {});
+    return scope === 'ALL';
+  });
+  if (matches.some(grant => String(grant.effect).toUpperCase() === 'DENY')) return false;
+  return matches.some(grant => String(grant.effect).toUpperCase() === 'ALLOW');
+}
+
 /* ── local persistence ──────────────────────────────────────────────────── */
 
 let persistTimer = null;
 export function persist(immediate = false) {
   const write = () => {
     try {
-      const payload = { ...store.data, __cached_user_id: currentUserId(), __scope_config_loaded: store.scopeConfigLoaded === true, __authorization_permissions: store.authorizationPermissions, __authorization_permissions_user_id: store.authorizationPermissionsUserId, __saved_at: new Date().toISOString() };
+      const payload = { ...store.data, __cached_user_id: currentUserId(), __scope_config_loaded: store.scopeConfigLoaded === true, __authorization_permissions: store.authorizationPermissions, __authorization_permissions_user_id: store.authorizationPermissionsUserId, __authorization_grants: store.authorizationGrantRows, __authorization_grants_user_id: store.authorizationGrantRowsUserId, __saved_at: new Date().toISOString() };
       localStorage.setItem(LS_KEY, JSON.stringify(payload));
       if (window.orshapSQLite?.saveState) {
         window.orshapSQLite.saveState(store.data).catch(() => {});
@@ -141,6 +177,8 @@ export function loadLocal() {
       for (const t of TABLES) store.data[t] = [];
       store.authorizationPermissions = [];
       store.authorizationPermissionsUserId = null;
+      store.authorizationGrantRows = [];
+      store.authorizationGrantRowsUserId = null;
       store.scopeConfigLoaded = false;
       store.noWarehouseAccess = !!window.__session?.id
         && !ELEVATED_ROLES.includes(String(window.__session?.role || '').toUpperCase())
@@ -175,6 +213,8 @@ export function loadLocal() {
       for (const t of TABLES) store.data[t] = [];
       store.authorizationPermissions = [];
       store.authorizationPermissionsUserId = null;
+      store.authorizationGrantRows = [];
+      store.authorizationGrantRowsUserId = null;
       store.noWarehouseAccess = !!activeUserId
         && !ELEVATED_ROLES.includes(String(window.__session?.role || '').toUpperCase())
         && !(Array.isArray(window.__session?.profile?.assigned_warehouse_ids)
@@ -189,19 +229,23 @@ export function loadLocal() {
       if (Array.isArray(parsed[t])) store.data[t] = parsed[t];
     }
     store.scopeConfigLoaded = parsed.__scope_config_loaded === true;
-    if (Array.isArray(parsed.__authorization_permissions)) {
-      store.authorizationPermissions = parsed.__authorization_permissions.filter(x => typeof x === 'string');
-      const permissionOwner = parsed.__authorization_permissions_user_id || parsed.__cached_user_id;
-      store.authorizationPermissionsUserId = permissionOwner === currentUserId()
-        ? currentUserId() : null;
-      if (store.authorizationPermissionsUserId === null) store.authorizationPermissions = [];
-    } else {
-      // Older snapshots do not prove which authorization grants are currently
-      // active, scoped, or revoked. Fail closed rather than reconstructing
-      // permissions from the deprecated role_permissions/custom_permissions
-      // projections; a live authorization refresh is required.
-      store.authorizationPermissions = [];
+    if (Array.isArray(parsed.__authorization_grants)
+        && parsed.__authorization_grants_user_id === currentUserId()) {
+      store.authorizationGrantRows = parsed.__authorization_grants.filter(row =>
+        row && typeof row.permission_key === 'string'
+        && ['ALLOW','DENY'].includes(String(row.effect || '').toUpperCase())
+      );
+      store.authorizationGrantRowsUserId = currentUserId();
+      store.authorizationPermissions = [...new Set(store.authorizationGrantRows
+        .filter(row => row.effect === 'ALLOW').map(row => row.permission_key))];
       store.authorizationPermissionsUserId = currentUserId();
+    } else {
+      // Older snapshots contain only permission keys, not their warehouse,
+      // resource, conditions, deny precedence or validity. Fail closed.
+      store.authorizationGrantRows = [];
+      store.authorizationGrantRowsUserId = null;
+      store.authorizationPermissions = [];
+      store.authorizationPermissionsUserId = null;
     }
     enrichAll();
     // The per-user stocktake outbox is the durable source for unsynchronized
@@ -370,20 +414,24 @@ export async function pullAll({ silent = false } = {}) {
     for (const [t, list] of results) {
       if (list !== null) store.data[t] = list;
     }
-    // UI gates consume the same effective grant catalogue as the database.
-    // This RPC returns only the signed-in user's candidate permission keys;
-    // every actual read/write remains subject to contextual DB authorization.
+    // Hydrate the active grants with their exact resource, warehouse,
+    // conditions, expiry and DENY precedence for contextual UI hints.
     try {
-      const permissionKeys = await rpc('current_user_authorization_permissions');
-      store.authorizationPermissions = Array.isArray(permissionKeys)
-        ? permissionKeys.filter(x => typeof x === 'string') : [];
+      const grantRows = await rpc('current_user_authorization_grants');
+      store.authorizationGrantRows = Array.isArray(grantRows) ? grantRows : [];
+      store.authorizationGrantRowsUserId = currentUserId();
+      store.authorizationPermissions = [...new Set(store.authorizationGrantRows
+        .filter(row => row?.effect === 'ALLOW' && typeof row.permission_key === 'string')
+        .map(row => row.permission_key))];
       store.authorizationPermissionsUserId = currentUserId();
     } catch (permissionError) {
-      if (store.authorizationPermissionsUserId !== currentUserId()) {
+      if (store.authorizationGrantRowsUserId !== currentUserId()) {
+        store.authorizationGrantRows = [];
+        store.authorizationGrantRowsUserId = null;
         store.authorizationPermissions = [];
         store.authorizationPermissionsUserId = null;
       }
-      console.warn('[store] effective authorization permissions unavailable; preserving only this user\'s cached grant keys:', permissionError?.message || permissionError);
+      console.warn('[store] scoped authorization grants unavailable; preserving only this user\'s verified cached grants:', permissionError?.message || permissionError);
     }
     store.scopeConfigLoaded = results.some(([t, list]) => t === 'role_warehouse_scopes' && list !== null);
     if (store.legacyMasterDataNeedsRefresh
@@ -1314,11 +1362,20 @@ function queueStocktakeCountLocal(lineId, qty, unitCode, baseUnit, factor, baseQ
       ? 'العد دون اتصال مسموح فقط لمستخدم معيّن لمستودع واحد، وضمن ذلك المستودع.'
       : 'Offline counting requires exactly one explicitly assigned warehouse and that session must belong to it.');
   }
-  const countGrants = new Set(store.authorizationPermissions || []);
-  const roleName = String(session.role || session.profile?.role || '').toUpperCase();
-  if (roleName !== 'SUPER_ADMIN'
-      && !countGrants.has('action:stocktake:count')
-      && !countGrants.has('action:stocktake:manage')) {
+  const countContext = {
+    resource_type: 'stocktake_session',
+    resource_id: stocktake.id,
+    warehouse_id: stocktake.warehouse_id,
+    owner_id: stocktake.created_by,
+    status: stocktake.status,
+    review_status: stocktake.review_status,
+    offline: true,
+    line_id: lineId,
+    item_id: line.item_id,
+    shelf_id: line.shelf_id
+  };
+  if (!hasEffectiveCachedGrant('action:stocktake:count', countContext)
+      && !hasEffectiveCachedGrant('action:stocktake:manage', countContext)) {
     throw new Error(isAr()
       ? 'لا تملك تفويض عدّ الجرد لهذه الجلسة.'
       : 'You do not have an explicit stocktake-count grant for this session.');
