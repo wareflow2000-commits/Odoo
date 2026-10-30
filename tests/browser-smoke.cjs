@@ -125,6 +125,16 @@ const fs = require('fs');
         throw new Error('Invalid offline stocktake fixture: ' + JSON.stringify(offlineCountFixtureState));
       }
       const saved = await saveStocktakeCount(lineId, 2, 'BOX');
+      const firstSaveScope = offlineWarehouseAllowed(warehouseId);
+      if (!firstSaveScope) {
+        throw new Error('Offline warehouse scope changed after first count: ' + JSON.stringify({
+          scopeConfigLoaded: store.scopeConfigLoaded,
+          legacyMasterDataNeedsRefresh: store.legacyMasterDataNeedsRefresh,
+          assigned: window.__session?.profile?.assigned_warehouse_ids,
+          sessionId: window.__session?.id,
+          profileId: window.__session?.profile?.id
+        }));
+      }
       // Session creation and count execution are separate grants. Neither
       // MANAGER nor ADMIN bypasses the count grant, but a delegated counter
       // with an explicit grant may count a session created by another user.
@@ -151,6 +161,17 @@ const fs = require('fs');
         warehouse_id: warehouseId, scope_type: 'WAREHOUSE', conditions: { offline: true },
         valid_from: new Date(Date.now() - 60000).toISOString(), valid_until: null
       }];
+      const delegatedScopeBeforeSave = offlineWarehouseAllowed(warehouseId);
+      if (!delegatedScopeBeforeSave) {
+        throw new Error('Offline warehouse scope changed before delegated count: ' + JSON.stringify({
+          scopeConfigLoaded: store.scopeConfigLoaded,
+          legacyMasterDataNeedsRefresh: store.legacyMasterDataNeedsRefresh,
+          assigned: window.__session?.profile?.assigned_warehouse_ids,
+          sessionId: window.__session?.id,
+          profileId: window.__session?.profile?.id,
+          role: window.__session?.role
+        }));
+      }
       const delegatedCounterAllowed = await saveStocktakeCount(lineId, 4, 'BOX');
       store.data.stocktake_sessions[0].created_by = originalCreator;
       Object.assign(store.data.stocktake_lines[0], originalCountLine);
