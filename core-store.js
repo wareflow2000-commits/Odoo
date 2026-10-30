@@ -1203,8 +1203,9 @@ function queueStocktakeCountLocal(lineId, qty, unitCode, baseUnit, factor, baseQ
       ? 'العد دون اتصال مسموح فقط لمستخدم معيّن لمستودع واحد، وضمن ذلك المستودع.'
       : 'Offline counting requires exactly one explicitly assigned warehouse and that session must belong to it.');
   }
-  const profiles = [session.profile, byId('profiles', session.id)].filter(Boolean);
-  const isManager = ELEVATED_ROLES.includes(String(session.role || '').toUpperCase());
+  // Match save_stocktake_count() ownership semantics in the database:
+  // only SUPER_ADMIN and MANAGER bypass the session-creator restriction.
+  const isManager = ['SUPER_ADMIN', 'MANAGER'].includes(String(session.role || '').toUpperCase());
   if (!isManager && stocktake.created_by !== session.id) {
     throw new Error(isAr()
       ? 'العد دون اتصال متاح فقط لمنشئ جلسة الجرد.'
