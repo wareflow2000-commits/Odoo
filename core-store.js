@@ -1047,7 +1047,7 @@ export const AUTO_APPROVE_CREATE_PERMISSION = Object.freeze({
 // Self-approval is never inferred from role or the global workflow setting.
 // The server evaluates both grants (including scoped denies); this client
 // pre-check is only an optimization and fails closed on any RPC failure.
-export async function shouldAutoApprove(transactionType) {
+export async function shouldAutoApprove(transactionType, warehouseId = null, transactionId = null) {
   const session = window.__session;
   if (!session?.id) return false;
 
@@ -1056,21 +1056,24 @@ export async function shouldAutoApprove(transactionType) {
     : store.get('profiles').find(row => row.id === session.id) || null;
   if (!profile || profile.can_approve_without_workflow !== true) return false;
 
-  const createPermission = AUTO_APPROVE_CREATE_PERMISSION[String(transactionType || '').toUpperCase()];
-  if (!createPermission) return false;
+  const normalizedType = String(transactionType || '').toUpperCase();
+  const createPermission = AUTO_APPROVE_CREATE_PERMISSION[normalizedType];
+  if (!createPermission || !warehouseId) return false;
 
-  try {
-    const [hasAutoApprove, hasCreate] = await Promise.all([
-      rpc('current_user_has_permission', { p_permission: 'action:transaction:auto_approve' }),
-      rpc('current_user_has_permission', { p_permission: createPermission })
-    ]);
-    return hasAutoApprove === true && hasCreate === true;
-  } catch (error) {
-    console.warn('[store] auto-approval authorization check failed', error);
-    return false;
-  }
+  const context = {
+    resource_type: 'transaction',
+    resource_id: transactionId,
+    warehouse_id: warehouseId,
+    owner_id: session.id,
+    status: 'PENDING_APPROVAL',
+    transaction_type: normalizedType,
+    offline: false
+  };
+  // Local decision only controls whether the client attempts auto-approval.
+  // approve_transaction independently re-evaluates both grants and SoD.
+  return hasEffectiveCachedGrant('action:transaction:auto_approve', context)
+    && hasEffectiveCachedGrant(createPermission, context);
 }
-
 export async function createTransactionBundle({
   type, warehouse_id, zone_id, section_id, storage_area_id = null,
   supplier = null, receiver_name = null, usage_party = null,
@@ -1194,7 +1197,7 @@ export async function createTransactionBundle({
   }
 
   let approved = false;
-  if (await shouldAutoApprove(normalizedType)) {
+  if (await shouldAutoApprove(normalizedType, tx.warehouse_id, tx.id)) {
     try { await rpc('approve_transaction', { p_transaction_id: tx.id }); approved = true; }
     catch (e) { console.warn('[store] auto-approval failed', e); }
   }
