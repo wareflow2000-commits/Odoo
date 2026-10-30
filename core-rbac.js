@@ -81,9 +81,10 @@ export function canManageSettings() {
   return role() === 'SUPER_ADMIN' || can('action:settings:manage');
 }
 
-// System settings and unit administration currently remain break-glass-only.
+// System settings and unit administration require an explicit grant for
+// every non-SUPER_ADMIN role; SUPER_ADMIN remains the audited break-glass path.
 export function canManageSystemSettings() {
-  return role() === 'SUPER_ADMIN';
+  return canDatabasePermission('action:settings:manage');
 }
 
 // Profile and role-permission RPCs currently require SUPER_ADMIN explicitly.
