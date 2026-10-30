@@ -324,7 +324,10 @@ const fs = require('fs');
           supplierReturn: canCreateTransactionType('RETURN_TO_SUPPLIER'),
           openingBalance: canCreateTransactionType('OPENING_BALANCE'),
           systemQty: canViewSystemQty(),
-          approve: canApproveTransactions()
+          approve: canApproveTransactions(),
+          itemCreate: canDatabasePermission('action:item:create'),
+          itemUpdate: canDatabasePermission('action:item:update'),
+          itemDelete: canDatabasePermission('action:item:delete')
         };
       }
       window.__session = {
@@ -381,6 +384,15 @@ const fs = require('fs');
         && roleContract.SUPER_ADMIN.approve && roleContract.MANAGER.approve
         && roleContract.ADMIN.approve && !roleContract.WAREHOUSE_MANAGER.approve
         && !roleContract.CLERK.approve
+        && roleContract.SUPER_ADMIN.itemCreate && roleContract.MANAGER.itemCreate
+        && roleContract.ADMIN.itemCreate && !roleContract.WAREHOUSE_MANAGER.itemCreate
+        && !roleContract.CLERK.itemCreate
+        && roleContract.SUPER_ADMIN.itemUpdate && roleContract.MANAGER.itemUpdate
+        && roleContract.ADMIN.itemUpdate && !roleContract.WAREHOUSE_MANAGER.itemUpdate
+        && !roleContract.CLERK.itemUpdate
+        && roleContract.SUPER_ADMIN.itemDelete && roleContract.MANAGER.itemDelete
+        && roleContract.ADMIN.itemDelete && !roleContract.WAREHOUSE_MANAGER.itemDelete
+        && !roleContract.CLERK.itemDelete
         && warehouseManagerExplicitGrant && wildcardDoesNotBypassDatabase;
       const w1 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
       const w2 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2';
