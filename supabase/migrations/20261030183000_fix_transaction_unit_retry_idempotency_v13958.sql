@@ -101,6 +101,18 @@ BEGIN
           USING ERRCODE = '22023';
       END IF;
 
+      IF v_line.entered_quantity IS NOT NULL THEN
+        IF v_line.entered_quantity <= 0
+           OR v_line.entered_quantity::text IN ('NaN','Infinity','-Infinity') THEN
+          RAISE EXCEPTION 'INVALID_ENTERED_QUANTITY: entered quantity must be finite and greater than zero'
+            USING ERRCODE = '22023';
+        END IF;
+        IF abs((v_line.entered_quantity * v_current_factor) - v_existing_line.quantity) > 0.000000001 THEN
+          RAISE EXCEPTION 'UNIT_QUANTITY_MISMATCH: entered quantity multiplied by its conversion factor must equal the supplied base quantity'
+            USING ERRCODE = '22023';
+        END IF;
+      END IF;
+
       UPDATE public.transaction_lines
       SET entered_quantity = v_line.entered_quantity,
           entered_unit = v_line.entered_unit
@@ -124,7 +136,9 @@ BEGIN
   IF position('v_already_created' IN d) = 0
      OR position('IF v_already_created THEN' IN d) = 0
      OR position('Idempotency conflict: transaction line unit evidence differs from the original request' IN d) = 0
-     OR position('CONTINUE;' IN d) = 0 THEN
+     OR position('CONTINUE;' IN d) = 0
+     OR position('UNIT_QUANTITY_MISMATCH' IN d) = 0
+     OR position('v_existing_line.quantity' IN d) = 0 THEN
     RAISE EXCEPTION 'Transaction unit idempotency guard verification failed';
   END IF;
 END;
