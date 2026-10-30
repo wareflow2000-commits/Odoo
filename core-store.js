@@ -126,6 +126,19 @@ function objectContainsContext(actual, expected) {
   });
 }
 
+export function hasAnyEffectiveCachedGrant(permissionKey) {
+  const user = window.__session;
+  if (!user?.id || !permissionKey) return false;
+  if (String(user.role || user.profile?.role || '').toUpperCase() === 'SUPER_ADMIN') return true;
+  if (store.authorizationGrantRowsUserId !== user.id) return false;
+  return store.authorizationGrantRows.some(grant =>
+    grant.permission_key === permissionKey
+    && String(grant.effect).toUpperCase() === 'ALLOW'
+    && (!grant.valid_from || new Date(grant.valid_from).getTime() <= Date.now())
+    && (!grant.valid_until || new Date(grant.valid_until).getTime() > Date.now())
+  );
+}
+
 export function hasEffectiveCachedGrant(permissionKey, context = {}) {
   const user = window.__session;
   if (!user?.id || !permissionKey) return false;
