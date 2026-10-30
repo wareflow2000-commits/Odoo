@@ -153,7 +153,7 @@ function filterHtml() {
 }
 
 function canViewRegister() {
-  return isElevated() || can('table:transactions:view');
+  return canDatabasePermission('table:transactions:view');
 }
 
 function render() {
@@ -1113,7 +1113,7 @@ function openReturn(type) {
 
 function openingBalanceAllowed() {
   return ['SUPER_ADMIN', 'MANAGER'].includes(String(role() || '').toUpperCase())
-    && can('action:transaction:adjustment:create');
+    && canDatabasePermission('action:transaction:adjustment:create');
 }
 
 function activeRows(table) {
