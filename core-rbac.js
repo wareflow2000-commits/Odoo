@@ -93,7 +93,7 @@ const SELF_APPROVAL_CREATE_PERMISSION = Object.freeze({
   RETURN_TO_SUPPLIER: 'action:transaction:issue:create',
   ADJUSTMENT_IN: 'action:transaction:adjustment:create',
   ADJUSTMENT_OUT: 'action:transaction:adjustment:create',
-  OPENING_BALANCE: 'action:transaction:adjustment:create'
+  OPENING_BALANCE: 'action:transaction:opening_balance:create'
 });
 
 export function canApproveTransactions(transaction = null) {
