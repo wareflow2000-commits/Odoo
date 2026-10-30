@@ -1572,6 +1572,7 @@ function authorizationGrantModal() {
       const scopeSelect = form.querySelector('#authScopeType');
       const warehouseSelect = form.querySelector('[name="warehouse_id"]');
       const resourceTypeInput = form.querySelector('[name="resource_type"]');
+      const validUntilInput = form.querySelector('[name="valid_until"]');
       const permissionSelect = form.querySelector('[name="permission_key"]');
       const resourceTypeForPermission = key => {
         if (key.startsWith('action:transaction:')) return 'transaction';
@@ -1604,6 +1605,7 @@ function authorizationGrantModal() {
           ? 'transaction / stocktake_session / stock_transfer / stock_transfer_order'
           : 'Optional for global role grants';
         warehouseSelect.required = isUserGrant || scopeSelect.value === 'WAREHOUSE';
+        validUntilInput.required = isUserGrant;
         warehouseSelect.disabled = !isUserGrant && scopeSelect.value === 'ALL';
       };
       subjectType.onchange = syncSubject;
@@ -1628,7 +1630,7 @@ function authorizationGrantModal() {
         const resourceId = data.resource_id.trim() || null;
         if (data.subject_type === 'USER'
             && (data.scope_type === 'ALL' || !data.warehouse_id || !data.resource_type.trim())) {
-          toast(tx('منحة المستخدم تتطلب نوع مورد ومستودعاً واحداً ونطاق بيانات محدداً.', 'A user grant requires a resource type, one warehouse and a bounded data scope.'), 'warning');
+          toast(tx('منحة المستخدم تتطلب نوع مورد ومستودعاً واحداً ونطاق بيانات محدداً وتاريخ انتهاء.', 'A user grant requires a resource type, one warehouse, a bounded data scope and an expiry date.'), 'warning');
           return;
         }
         if (resourceId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(resourceId)) {
