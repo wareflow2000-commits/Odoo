@@ -17,7 +17,7 @@ import {
   rejectTransaction, requestTransactionReference,
   offlineTransactionTypeAllowed, offlineWarehouseAllowed,
   itemLabel, warehouseName, shelfPath, shelfOptions, shelvesForItem,
-  warehouseOptions, itemOptions, unitOptions
+  warehouseOptions, itemOptions, unitOptions, hasAnyEffectiveCachedGrant
 } from './core-store.js';
 import {
   canApproveTransactions, canDatabasePermission, canCreateTransactionType,
