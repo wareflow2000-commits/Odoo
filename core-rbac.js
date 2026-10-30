@@ -34,10 +34,7 @@ function permissionSet() {
 }
 
 export function can(permissionKey) {
-  if (!currentUser()) return false;
-  if (isAdmin()) return true;
-  const set = permissionSet();
-  return set.has(permissionKey) || set.has('*');
+  return canDatabasePermission(permissionKey);
 }
 
 // Mirrors public.current_user_has_permission(): SUPER_ADMIN, MANAGER and ADMIN
@@ -97,39 +94,46 @@ export function canAdministerProfiles() {
 }
 
 export function canViewSystemQty() {
-  return isElevated() || can('action:stocktake:view_system_qty');
+  return canDatabasePermission('action:stocktake:view_system_qty');
 }
 
 export function canApproveTransactions() {
-  return isElevated() || can('action:transaction:approve');
+  return canDatabasePermission('action:transaction:approve');
 }
 
 export function canCreateTransactionType(type) {
   const t = String(type || '').toUpperCase();
-  if (isElevated()) return true;
-  if (['GRN', 'RECEIPT'].includes(t)) return can('action:transaction:grn:create');
-  if (t === 'ISSUE') return can('action:transaction:issue:create');
-  if (t.startsWith('ADJUSTMENT')) return can('action:transaction:adjustment:create');
-  if (t.startsWith('RETURN')) return can('action:transaction:return:create');
-  return can('action:transaction:create');
+  if (t === 'OPENING_BALANCE') {
+    return ['SUPER_ADMIN', 'MANAGER'].includes(role())
+      && canDatabasePermission('action:transaction:adjustment:create');
+  }
+  if (t === 'GRN' || t === 'RETURN_FROM_USAGE' || t === 'RETURN_FROM_CUSTOMER') {
+    return canDatabasePermission('action:transaction:grn:create');
+  }
+  if (t === 'ISSUE' || t === 'RETURN_TO_SUPPLIER') {
+    return canDatabasePermission('action:transaction:issue:create');
+  }
+  if (t === 'ADJUSTMENT_IN' || t === 'ADJUSTMENT_OUT') {
+    return canDatabasePermission('action:transaction:adjustment:create');
+  }
+  return false;
 }
 
 export function canManageStocktake() {
-  return isElevated() || canAny([
+  return [
     'action:stocktake:start', 'action:stocktake:count',
     'action:stocktake:submit', 'action:stocktake:approve'
-  ]);
+  ].some(canDatabasePermission);
 }
 
 export function canTransfer() {
-  return isElevated() || canAny(['action:stock_transfer:create', 'action:stock_transfer:view']);
+  return ['action:stock_transfer:create', 'action:stock_transfer:view']
+    .some(canDatabasePermission);
 }
 
 export function canAccessPage(page) {
-  if (!currentUser()) return false;
-  if (isElevated()) return true;
-  const set = permissionSet();
-  // Fail closed when no page permissions are configured. An empty set can
-  // mean permissions have not loaded or were denied; it must not grant access.
-  return set.has(`page:${page}:access`) || set.has('page:*:access') || set.has('*');
+  if (!currentUser() || !page) return false;
+  // Match the exact permission evaluated by RLS; no UI-only wildcard or
+  // WAREHOUSE_MANAGER bypass may grant a page the database will deny.
+  return canDatabasePermission(`page:${page}:access`);
 }
