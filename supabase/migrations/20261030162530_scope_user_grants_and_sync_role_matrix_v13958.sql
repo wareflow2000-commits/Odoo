@@ -60,6 +60,22 @@ BEGIN
  IF n=d THEN RAISE EXCEPTION 'USER grant scope validation anchor not found'; END IF;
  EXECUTE n;
 
+ SELECT pg_get_functiondef('public.admin_create_authorization_grant_v2(text,text,uuid,text,text,text,uuid,uuid,text,jsonb,timestamptz,timestamptz,text)'::regprocedure) INTO d;
+ anchor:='  IF p_subject_type=''USER'' AND (p_scope_type=''ALL'' OR p_warehouse_id IS NULL OR NULLIF(btrim(COALESCE(p_resource_type,'''')),'''') IS NULL) THEN' || E'\\n' ||
+         '    RAISE EXCEPTION ''User grants require a resource type, one warehouse, and OWN/WAREHOUSE/CONTEXT scope'';' || E'\\n' ||
+         '  END IF;';
+ n:=replace(d,anchor,anchor || E'\\n' ||
+   '  IF p_subject_type=''USER'' AND NOT (' || E'\\n' ||
+   '    (p_permission_key LIKE ''action:transaction:%'' AND p_resource_type=''transaction'') OR' || E'\\n' ||
+   '    (p_permission_key LIKE ''action:stocktake:%'' AND p_resource_type=''stocktake_session'') OR' || E'\\n' ||
+   '    (p_permission_key=''action:stock_transfer:create'' AND p_resource_type=''stock_transfer_order'') OR' || E'\\n' ||
+   '    (p_permission_key LIKE ''action:stock_transfer:%'' AND p_permission_key<>''action:stock_transfer:create'' AND p_resource_type=''stock_transfer'')' || E'\\n' ||
+   '  ) THEN' || E'\\n' ||
+   '    RAISE EXCEPTION ''This user permission does not support the selected resource type; use a contextual transaction, stocktake or transfer action'';' || E'\\n' ||
+   '  END IF;');
+ IF n=d THEN RAISE EXCEPTION 'user permission resource mapping anchor not found'; END IF;
+ EXECUTE n;
+
  EXECUTE $fn$
  CREATE OR REPLACE FUNCTION public.admin_replace_role_permissions(
    p_role_name text,p_permission_keys text[]
