@@ -1558,7 +1558,7 @@ function authorizationGrantModal() {
       </select></div>
     <div class="o_field full"><label>${tx('شروط السياق JSON (لنطاق CONTEXT)', 'Context conditions JSON (for CONTEXT scope)')}</label>
       <textarea name="conditions" rows="3" placeholder='{"status":"PENDING_APPROVAL"}'></textarea></div>
-    <div class="o_field"><label>${tx('تنتهي في (اختياري)', 'Expires at (optional)')}</label><input type="datetime-local" name="valid_until"></div>
+    <div class="o_field"><label>${tx('تاريخ الانتهاء (إلزامي لمنح المستخدم)', 'Expiry date (required for user grants)')}</label><input type="datetime-local" name="valid_until"></div>
     <div class="o_field full"><label>${tx('سبب منح التفويض', 'Grant reason')}</label><textarea name="reason" required rows="2"></textarea></div>
   </form>`;
   modal({
