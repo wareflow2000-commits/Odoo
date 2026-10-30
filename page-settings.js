@@ -236,7 +236,7 @@ function render() {
       { value: 'import', label: tx('استيراد البيانات', 'Data import') },
       { value: 'data', label: tx('البيانات والنسخ', 'Data & backup') }
     ].map(t => ({ ...t, onclick: `OW.wms.settingsTab('${t.value}')` })), F.tab)}
-    ${F.tab === 'general' ? renderGeneral(banned || !canManageSystemSettings())
+    ${F.tab === 'general' ? `${!canManageSystemSettings() ? alertBox(tx('تعديل أعلام النظام متاح للمسؤول الأعلى أو المدير فقط.', 'System flags are editable by SUPER_ADMIN / MANAGER only.'), 'warning') : ''}${renderGeneral(banned || !canManageSystemSettings())}`
       : F.tab === 'users' ? `${!canAdministerProfiles() ? alertBox(tx('إدارة ملفات المستخدمين متاحة للمسؤول الأعلى فقط.', 'Profile administration is restricted to SUPER_ADMIN. Database authorization remains authoritative.'), 'warning') : ''}${renderUsers(banned || !canAdministerProfiles())}`
       : F.tab === 'roles' ? `${!canAdministerProfiles() ? alertBox(tx('إدارة صلاحيات الأدوار متاحة للمسؤول الأعلى فقط.', 'Role-permission administration is restricted to SUPER_ADMIN.'), 'warning') : ''}${renderRoles(banned || !canAdministerProfiles())}`
       : F.tab === 'units' ? `${!canManageSystemSettings() ? alertBox(tx('إدارة الوحدات والتحويلات متاحة للمسؤول الأعلى أو المدير فقط.', 'Unit and conversion administration is restricted to SUPER_ADMIN / MANAGER.'), 'warning') : ''}${renderUnits(banned || !canManageSystemSettings())}`
