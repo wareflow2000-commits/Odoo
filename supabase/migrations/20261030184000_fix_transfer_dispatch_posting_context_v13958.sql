@@ -47,7 +47,7 @@ DECLARE
   decl_old text := '  v_src_tx uuid; v_dst_tx uuid; v_status text; v_src_area uuid; v_dst_area uuid; v_lock_key text;' || E'\n' || 'BEGIN';
   decl_new text := '  v_src_tx uuid; v_dst_tx uuid; v_status text; v_src_area uuid; v_dst_area uuid; v_lock_key text;' || E'\n' ||
     '  v_context_order_id uuid;' || E'\n' || 'BEGIN';
-  permission_old text := '  IF NOT public.current_user_has_permission(''action:stock_transfer:create'') THEN RAISE EXCEPTION ''Permission denied to create stock transfers''; END IF;';
+  permission_old text := '  IF NOT public.current_user_has_permission(''action:stock_transfer:create'') THEN RAISE EXCEPTION ''Permission denied to create stock transfers'' USING ERRCODE=''42501''; END IF;';
   permission_new text := '  IF NOT EXISTS (SELECT 1 FROM public.wms_transfer_scope_context c' || E'\n' ||
     '    WHERE c.transaction_id=txid_current() AND c.actor_id=v_user AND c.context_type=''DISPATCH_ORDER'') THEN' || E'\n' ||
     '    RAISE EXCEPTION ''A validated transfer-dispatch context is required'' USING ERRCODE=''42501'';' || E'\n' ||
