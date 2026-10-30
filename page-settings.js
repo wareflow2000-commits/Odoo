@@ -1271,6 +1271,10 @@ function bind(_, main) {
   if (none) none.onclick = () => main.querySelectorAll('[data-perm]').forEach(c => { if (!c.disabled) c.checked = false; });
   const save = main.querySelector('#permSave');
   if (save) save.onclick = async () => {
+    if (!canAdministerProfiles()) {
+      toast(tx('إدارة صلاحيات الأدوار متاحة للمسؤول الأعلى فقط.', 'Only SUPER_ADMIN may administer role permissions.'), 'error');
+      return;
+    }
     const keys = [...main.querySelectorAll('[data-perm]')].filter(c => c.checked).map(c => c.dataset.perm);
     if (!await confirmDialog({
       title: tx('حفظ صلاحيات الدور', 'Save role permissions'),
@@ -1335,6 +1339,10 @@ function bind(_, main) {
 /* ── user editing ────────────────────────────────────────────────────────── */
 
 function userModal(id) {
+  if (!canAdministerProfiles()) {
+    toast(tx('إدارة ملفات المستخدمين متاحة للمسؤول الأعلى فقط.', 'Only SUPER_ADMIN may administer user profiles.'), 'error');
+    return;
+  }
   const u = store.byId('profiles', id);
   if (!u) return;
   const assigned = new Set(u.assigned_warehouse_ids || []);
@@ -1385,6 +1393,10 @@ function userModal(id) {
 }
 
 function linkUserModal() {
+  if (!canAdministerProfiles()) {
+    toast(tx('ربط المستخدمين متاح للمسؤول الأعلى فقط.', 'Only SUPER_ADMIN may link user profiles.'), 'error');
+    return;
+  }
   const body = `<form id="linkForm" class="o_form_grid">
       ${input({ name: 'email', label: tx('البريد الإلكتروني', 'Email'), type: 'email', required: true })}
       ${input({ name: 'name', label: tx('الاسم', 'Name'), required: true })}
