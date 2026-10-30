@@ -32,7 +32,7 @@ const fs = require('fs');
     // Exercise the real store module in Chromium with isolated in-memory fixtures.
     // No Supabase writes are performed: the browser is deliberately put offline.
     const offlineChecks = await page.evaluate(async () => {
-      const { store, offlineTransactionTypeAllowed, offlineWarehouseAllowed, saveStocktakeCount, queueSnapshot, loadLocal } =
+      const { store, offlineTransactionTypeAllowed, offlineWarehouseAllowed, saveStocktakeCount, queueSnapshot, loadLocal, insertRow, updateRow, deleteRow, upsertSetting } =
         await import('/core-store.js');
       const userId = '11111111-1111-4111-8111-111111111111';
       const warehouseId = '22222222-2222-4222-8222-222222222222';
@@ -57,6 +57,27 @@ const fs = require('fs');
         system_qty: 20, base_unit: 'PCS', counted_qty: null
       }];
       Object.defineProperty(navigator, 'onLine', { configurable: true, value: false });
+      const expectBlocked = async action => {
+        try { await action(); return false; } catch (_) { return true; }
+      };
+      localStorage.setItem('orshap_master_outbox_v1:' + userId, JSON.stringify([{
+        operation_id: 'legacy-master-fixture', kind: 'insert', table: 'items',
+        id: '99999999-9999-4999-8999-999999999999',
+        row: { id: '99999999-9999-4999-8999-999999999999', code: 'LEGACY-OFFLINE' },
+        status: 'PENDING'
+      }]));
+      const blockedMasterWrites = await Promise.all([
+        expectBlocked(() => insertRow('items', { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', code: 'OFFLINE-INSERT' })),
+        expectBlocked(() => updateRow('items', itemId, { name_en: 'OFFLINE-UPDATE' })),
+        expectBlocked(() => deleteRow('items', itemId)),
+        expectBlocked(() => upsertSetting('REQUIRE_APPROVAL', false))
+      ]);
+      const legacyQueueRows = queueSnapshot().filter(row => row.source === 'blocked_master');
+      const legacyMasterQuarantined = !localStorage.getItem('orshap_master_outbox_v1:' + userId)
+        && legacyQueueRows.length === 1 && legacyQueueRows[0].status === 'CONFLICT'
+        && JSON.parse(localStorage.getItem('orshap_master_outbox_quarantine_v1:' + userId) || '[]').length === 1;
+      const noOptimisticMasterWrite = store.data.items.length === 1
+        && store.data.items[0].id === itemId;
       const issueAllowed = offlineTransactionTypeAllowed('ISSUE');
       const receiptDenied = !offlineTransactionTypeAllowed('RECEIPT');
       const assignedWarehouseAllowed = offlineWarehouseAllowed(warehouseId);
@@ -75,7 +96,9 @@ const fs = require('fs');
 
       return {
         issueAllowed, receiptDenied, assignedWarehouseAllowed, otherWarehouseDenied,
-        multiWarehouseDenied, countQueued: !!saved.pending_sync && queued,
+        multiWarehouseDenied, blockedMasterWrites: blockedMasterWrites.every(Boolean),
+        legacyMasterQuarantined, noOptimisticMasterWrite,
+        countQueued: !!saved.pending_sync && queued,
         convertedBaseQuantity: saved.counted_qty,
         queueOwnerMatches: queueRows.length === 1 && queueRows[0].user_id === userId
       };
@@ -476,7 +499,7 @@ const fs = require('fs');
     if (scopeFailures.length) throw new Error('Warehouse scope checks failed: ' + JSON.stringify(warehouseScopeChecks));
 
     if (errors.length) throw new Error('Browser errors:\\n' + errors.join('\\n'));
-    console.log('PASS: login desktop/mobile smoke; no browser errors; offline policy allows ISSUE only; single-warehouse scope enforced; multi-warehouse offline denied; stocktake count queued locally with BOX x12 = 24 PCS and bound to its creator; refresh/fetch-failure cache preservation; conversion conflict; corrected-factor sync exactly once; foreign-user cached snapshot rejected; role SELECTED/ALL/INHERIT scopes and user-assignment intersections enforced in UI.');
+    console.log('PASS: login desktop/mobile smoke; no browser errors; offline policy allows ISSUE and stocktake counts only; master-data writes are rejected and legacy master queue is quarantined; single-warehouse scope enforced; multi-warehouse offline denied; stocktake count queued locally with BOX x12 = 24 PCS and bound to its creator; refresh/fetch-failure cache preservation; conversion conflict; corrected-factor sync exactly once; foreign-user cached snapshot rejected; role SELECTED/ALL/INHERIT scopes and user-assignment intersections enforced in UI.');
   } catch (error) {
     fs.mkdirSync('test-results', { recursive: true });
     await page.screenshot({ path: 'test-results/failure.png', fullPage: true }).catch(() => {});
