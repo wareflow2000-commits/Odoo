@@ -2,7 +2,7 @@
 // OW — role based access control (UI gate only; RLS is authoritative)
 // ============================================================================
 import { currentUser } from './core-auth.js';
-import { store } from './core-store.js';
+import { store, hasEffectiveCachedGrant } from './core-store.js';
 
 export function role() { return String(currentUser()?.role || '').toUpperCase(); }
 export const isAdmin = () => role() === 'SUPER_ADMIN';
@@ -20,29 +20,16 @@ export function rolePermissions() {
     .map(p => p.permission_key);
 }
 
-let permCache = { key: '', keys: new Set() };
-function permissionSet() {
-  // Authorization grants are the sole effective source for UI permission
-  // hints. Legacy role_permissions remain a read-only compatibility projection;
-  // profile custom_permissions are deprecated and cannot create new grants.
-  const grantKeys = (store.authorizationPermissions || []).map(String).sort();
-  const key = `g:${grantKeys.join(',')}`;
-  if (permCache.key === key) return permCache.keys;
-  const set = new Set(grantKeys);
-  permCache = { key, keys: set };
-  return set;
+export function can(permissionKey, context = {}) {
+  return canDatabasePermission(permissionKey, context);
 }
 
-export function can(permissionKey) {
-  return canDatabasePermission(permissionKey);
-}
-
-// Only SUPER_ADMIN has the audited break-glass bypass. Every other role,
- // including MANAGER and ADMIN, must hold an explicit role/user grant.
-export function canDatabasePermission(permissionKey) {
+// Mirrors the database's contextual policy evaluation for UI hints. Explicit
+// DENY grants override ALLOW; the database remains authoritative for every RPC.
+export function canDatabasePermission(permissionKey, context = {}) {
   if (!currentUser()) return false;
   if (role() === 'SUPER_ADMIN') return true;
-  return permissionSet().has(permissionKey);
+  return hasEffectiveCachedGrant(permissionKey, context);
 }
 
 export function canAny(keys = []) {
