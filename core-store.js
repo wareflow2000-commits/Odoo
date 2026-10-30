@@ -772,7 +772,7 @@ export async function flushOutbox() {
         changed = true;
         outboxWrite(list);
       }
-      await rpc('create_transaction_with_lines_v2', {
+      await rpc('create_offline_issue_bundle', {
         p_transaction_id: tx.id,
         p_transaction: tx,
         p_lines: op.payload.lines
@@ -1235,10 +1235,8 @@ function queueStocktakeCountLocal(lineId, qty, unitCode, baseUnit, factor, baseQ
       ? 'العد دون اتصال مسموح فقط لمستخدم معيّن لمستودع واحد، وضمن ذلك المستودع.'
       : 'Offline counting requires exactly one explicitly assigned warehouse and that session must belong to it.');
   }
-  // Match save_stocktake_count() ownership semantics in the database:
-  // only SUPER_ADMIN and MANAGER bypass the session-creator restriction.
-  const isManager = ['SUPER_ADMIN', 'MANAGER'].includes(String(session.role || '').toUpperCase());
-  if (!isManager && stocktake.created_by !== session.id) {
+  // Offline counts remain bound to their original session creator for every role.
+  if (stocktake.created_by !== session.id) {
     throw new Error(isAr()
       ? 'العد دون اتصال متاح فقط لمنشئ جلسة الجرد.'
       : 'Offline counting is available only to the stocktake session creator.');
@@ -1307,13 +1305,14 @@ async function flushStocktakeCountQueue() {
         if (!currentUnit || !Number.isFinite(currentFactor) || currentFactor <= 0 || !Number.isFinite(savedFactor) || Math.abs(currentFactor - savedFactor) > 1e-9) {
           throw new Error('Unit conversion factor changed; review and re-enter this offline count.');
         }
-        await rpc('save_stocktake_count_v3', {
-          p_line_id: row.line_id, p_entered_quantity: row.entered_quantity,
-          p_entered_unit: row.entered_unit, p_expected_factor: savedFactor
-        });
-      } else {
-        await rpc('save_stocktake_count', { p_line_id: row.line_id, p_counted_qty: row.base_quantity });
-      }
+      } 
+      const expectedFactor = Number(row.conversion_factor || 1);
+      await rpc('save_offline_stocktake_count', {
+        p_line_id: row.line_id,
+        p_entered_quantity: row.entered_quantity,
+        p_entered_unit: row.entered_unit || row.base_unit,
+        p_expected_factor: expectedFactor
+      });
       row.status = 'SYNCED'; row.synced_at = new Date().toISOString(); row.last_error = null;
       changed = true; done++;
     } catch (e) {
