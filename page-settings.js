@@ -262,7 +262,7 @@ function render() {
       : F.tab === 'users' ? `${!canAdministerProfiles() ? alertBox(tx('إدارة ملفات المستخدمين متاحة للمسؤول الأعلى فقط.', 'Profile administration is restricted to SUPER_ADMIN. Database authorization remains authoritative.'), 'warning') : ''}${renderUsers(banned || !canAdministerProfiles())}`
       : F.tab === 'roles' ? `${!canAdministerProfiles() ? alertBox(tx('إدارة صلاحيات الأدوار متاحة للمسؤول الأعلى فقط.', 'Role-permission administration is restricted to SUPER_ADMIN.'), 'warning') : ''}${renderRoles(banned || !canAdministerProfiles())}`
       : F.tab === 'units' ? `${!canManageSystemSettings() ? alertBox(tx('إدارة الوحدات والتحويلات متاحة للمسؤول الأعلى أو المدير فقط.', 'Unit and conversion administration is restricted to SUPER_ADMIN / MANAGER.'), 'warning') : ''}${renderUnits(banned || !canManageSystemSettings())}`
-      : F.tab === 'categories' ? renderCategories(banned)
+      : F.tab === 'categories' ? renderCategories()
       : F.tab === 'import' ? renderImport(banned)
       : renderData(banned)}
   </div>`;
@@ -337,7 +337,7 @@ function renderUsers(banned) {
       ]
     })),
     { emptyTitle: tx('لا يوجد مستخدمون', 'No users') }
-  ), `<button class="o_btn o_btn_primary o_btn_sm" onclick="OW.wms.linkUser()" ${canCreate ? '' : 'disabled'}>
+  ), `<button class="o_btn o_btn_primary o_btn_sm" onclick="OW.wms.linkUser()" ${banned ? 'disabled' : ''}>
         <i class="fa-solid fa-user-plus"></i> ${tx('ربط مستخدم', 'Link user')}</button>`, 'flush-body');
 }
 
@@ -432,7 +432,7 @@ function renderUnits(banned) {
     </div>`;
 }
 
-function renderCategories(banned) {
+function renderCategories() {
   const live = navigator.onLine && !window.__session?.offline;
   const canCreate = can('action:item:create') && live;
   const canUpdate = can('action:item:update') && live;
@@ -453,7 +453,7 @@ function renderCategories(banned) {
         </div>` : '']
     })),
     { emptyTitle: tx('لا توجد تصنيفات', 'No categories') }
-  ), `<button class="o_btn o_btn_primary o_btn_sm" onclick="OW.wms.categoryModal()" ${banned ? 'disabled' : ''}>
+  ), `<button class="o_btn o_btn_primary o_btn_sm" onclick="OW.wms.categoryModal()" ${canCreate ? '' : 'disabled'}>
         <i class="fa-solid fa-plus"></i> ${tx('تصنيف', 'Category')}</button>`, 'flush-body');
 }
 
