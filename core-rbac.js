@@ -22,13 +22,13 @@ export function rolePermissions() {
 
 let permCache = { key: '', keys: new Set() };
 function permissionSet() {
-  // Cache by the actual permission keys, not row count: replacing a role's
-  // permissions with a different set of the same size must invalidate cache.
-  const roleKeys = rolePermissions().map(String).sort();
-  const customKeys = customPermissions().map(String).sort();
-  const key = `${role()}|r:${roleKeys.join(',')}|c:${customKeys.join(',')}`;
+  // Authorization grants are the single effective source for UI permission
+  // hints. Legacy role_permissions/custom_permissions remain management inputs
+  // and are synchronized server-side into authorization_grants.
+  const grantKeys = (store.authorizationPermissions || []).map(String).sort();
+  const key = `g:${grantKeys.join(',')}`;
   if (permCache.key === key) return permCache.keys;
-  const set = new Set([...roleKeys, ...customKeys]);
+  const set = new Set(grantKeys);
   permCache = { key, keys: set };
   return set;
 }
