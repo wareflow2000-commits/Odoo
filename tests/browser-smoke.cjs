@@ -493,6 +493,9 @@ const fs = require('fs');
         },
         async rpc(name, args) {
           if (name === 'list_stocktake_lines_secure') return { data: store.data.stocktake_lines, error: null };
+          if (name === 'current_user_authorization_grants') {
+            return { data: store.authorizationGrantRows, error: null };
+          }
           if (name === 'save_offline_stocktake_count_v2') {
             countRpcCalls++;
             rpcArgs.push(args);
