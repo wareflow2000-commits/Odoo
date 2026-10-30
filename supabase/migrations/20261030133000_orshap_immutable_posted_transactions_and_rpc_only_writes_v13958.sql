@@ -80,9 +80,9 @@ $function$;
 -- Authenticated clients must use create_transaction_with_lines_v2 and the
 -- dedicated approve/reject RPCs. The v2 SECURITY DEFINER wrapper can still
 -- invoke the legacy SECURITY DEFINER implementation as its owner.
-REVOKE INSERT, UPDATE, DELETE ON TABLE public.transactions FROM authenticated;
-REVOKE INSERT, UPDATE, DELETE ON TABLE public.transaction_lines FROM authenticated;
-REVOKE EXECUTE ON FUNCTION public.create_transaction_with_lines(uuid, jsonb, jsonb) FROM authenticated;
+REVOKE INSERT, UPDATE, DELETE ON TABLE public.transactions FROM PUBLIC, anon, authenticated;
+REVOKE INSERT, UPDATE, DELETE ON TABLE public.transaction_lines FROM PUBLIC, anon, authenticated;
+REVOKE EXECUTE ON FUNCTION public.create_transaction_with_lines(uuid, jsonb, jsonb) FROM PUBLIC, anon, authenticated;
 
 -- Explicitly keep read access and the supported workflow entry points.
 GRANT SELECT ON TABLE public.transactions, public.transaction_lines TO authenticated;
