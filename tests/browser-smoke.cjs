@@ -702,7 +702,7 @@ const fs = require('fs');
       const superAdminGlobalBreakGlass = store.data.warehouses.length === 3
         && accessibleWarehouseIds() === null && canAccessWarehouse(w3);
 
-      return { permissionRoleContract, cachePermissionMigration, selectedRole, assignmentIntersection, inheritFailsClosed, explicitAll,
+      return { permissionRoleContract, legacyCacheFailsClosed, selectedRole, assignmentIntersection, inheritFailsClosed, explicitAll,
         userAssignmentNarrowsAll, adminInheritFailsClosed, missingScopeFailsClosed, superAdminGlobalBreakGlass };
     });
     const scopeFailures = Object.entries(warehouseScopeChecks).filter(([, value]) => value !== true);
