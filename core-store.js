@@ -1269,11 +1269,14 @@ function queueStocktakeCountLocal(lineId, qty, unitCode, baseUnit, factor, baseQ
       ? 'العد دون اتصال مسموح فقط لمستخدم معيّن لمستودع واحد، وضمن ذلك المستودع.'
       : 'Offline counting requires exactly one explicitly assigned warehouse and that session must belong to it.');
   }
-  // Offline counts remain bound to their original session creator for every role.
-  if (stocktake.created_by !== session.id) {
+  const countGrants = new Set(store.authorizationPermissions || []);
+  const roleName = String(session.role || session.profile?.role || '').toUpperCase();
+  if (roleName !== 'SUPER_ADMIN'
+      && !countGrants.has('action:stocktake:count')
+      && !countGrants.has('action:stocktake:manage')) {
     throw new Error(isAr()
-      ? 'العد دون اتصال متاح فقط لمنشئ جلسة الجرد.'
-      : 'Offline counting is available only to the stocktake session creator.');
+      ? 'لا تملك تفويض عدّ الجرد لهذه الجلسة.'
+      : 'You do not have an explicit stocktake-count grant for this session.');
   }
   const now = new Date().toISOString();
   const rows = stocktakeCountQueue();
@@ -1390,17 +1393,13 @@ export async function saveStocktakeCount(lineId, qty, enteredUnit = null) {
     return queueStocktakeCountLocal(lineId, Number(qty), unitCode, baseUnit, factor, baseQty);
   }
   try {
-    if (enteredUnit && unitCode !== baseUnit) {
-      res = await rpc('save_stocktake_count_v3', {
-        p_line_id: lineId,
-        p_entered_quantity: Number(qty),
-        p_entered_unit: unitCode,
-        p_expected_factor: factor
-      });
-      baseQty = Number(res?.counted_qty ?? baseQty);
-    } else {
-      res = await rpc('save_stocktake_count', { p_line_id: lineId, p_counted_qty: Number(qty) });
-    }
+    res = await rpc('save_stocktake_count_v3', {
+      p_line_id: lineId,
+      p_entered_quantity: Number(qty),
+      p_entered_unit: unitCode,
+      p_expected_factor: factor
+    });
+    baseQty = Number(res?.counted_qty ?? baseQty);
   } catch (e) {
     if (isNetworkFailure(e)) return queueStocktakeCountLocal(lineId, Number(qty), unitCode, baseUnit, factor, baseQty);
     throw e;
