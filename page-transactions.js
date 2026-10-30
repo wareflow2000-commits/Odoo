@@ -20,7 +20,8 @@ import {
   warehouseOptions, itemOptions, unitOptions
 } from './core-store.js';
 import {
-  canApproveTransactions, canDatabasePermission, role, canAccessWarehouse
+  canApproveTransactions, canDatabasePermission, canCreateTransactionType,
+  role, canAccessWarehouse
 } from './core-rbac.js';
 import {
   fmtDateTime, fmtNum, txLabel, statusLabel, todayISO
@@ -271,18 +272,8 @@ function accessibleWarehouseOptions() {
   return warehouseOptions().filter(o => canAccessWarehouse(o.value));
 }
 
-function canCreateType(type) {
-  const t = String(type || '').toUpperCase();
-  if (t === 'GRN' || t === 'RETURN_FROM_USAGE' || t === 'RETURN_FROM_CUSTOMER') {
-    return canDatabasePermission('action:transaction:grn:create');
-  }
-  if (t === 'ISSUE' || t === 'RETURN_TO_SUPPLIER') {
-    return canDatabasePermission('action:transaction:issue:create');
-  }
-  if (t === 'ADJUSTMENT_IN' || t === 'ADJUSTMENT_OUT') {
-    return canDatabasePermission('action:transaction:adjustment:create');
-  }
-  return false;
+function canCreateType(type, warehouseId = null) {
+  return canCreateTransactionType(type, warehouseId);
 }
 
 function availableLabel(itemId, shelfId, batchNo) {
@@ -752,6 +743,9 @@ function openReview(root, draft, closeTx) {
         if (draft.errors.length) return;
         confirm.disabled = true;
         try {
+          if (!canCreateType(draft.payload.type, draft.payload.warehouse_id)) {
+            throw new Error(tx('لا تملك تفويض إنشاء هذا النوع من السندات في المستودع المحدد.', 'You do not have a create grant for this voucher type in the selected warehouse.'));
+          }
           const result = await createTransactionBundle(draft.payload);
           closeReview();
           closeTx();
@@ -835,7 +829,12 @@ function detailTable(t) {
 function openTransaction(id) {
   const t = store.byId('transactions', id);
   if (!t) return;
-  const canAct = canApproveTransactions() && ['PENDING_APPROVAL', 'PENDING'].includes(t.status);
+  const canApprove = canApproveTransactions(t) && ['PENDING_APPROVAL', 'PENDING'].includes(t.status);
+  const canReject = canDatabasePermission('action:transaction:reject', {
+    resource_type: 'transaction', resource_id: t.id, warehouse_id: t.warehouse_id,
+    owner_id: t.created_by, status: t.status, transaction_type: t.transaction_type
+  }) && ['PENDING_APPROVAL', 'PENDING'].includes(t.status);
+  const canAct = canApprove || canReject;
   const body = `<div class="o_detail_head">
       <div><span class="o_detail_ref">${escHtml(t.reference_no || '—')}</span> ${statusBadge(t.status, statusLabel(t.status))}</div>
       <div class="o_detail_type">${txLabel(t.transaction_type)}</div>
@@ -852,12 +851,12 @@ function openTransaction(id) {
     body,
     footer: `<button class="o_btn o_btn_secondary" id="txViewClose">${tx('إغلاق', 'Close')}</button>
       <button class="o_btn o_btn_ghost" id="txViewPrint"><i class="fa-solid fa-print"></i> ${tx('طباعة', 'Print')}</button>
-      ${canAct ? `<button class="o_btn o_btn_danger" id="txViewReject">${tx('رفض', 'Reject')}</button>
-        <button class="o_btn o_btn_success" id="txViewApprove">${tx('اعتماد', 'Approve')}</button>` : ''}`,
+      ${canReject ? `<button class="o_btn o_btn_danger" id="txViewReject">${tx('رفض', 'Reject')}</button>` : ''}
+      ${canApprove ? `<button class="o_btn o_btn_success" id="txViewApprove">${tx('اعتماد', 'Approve')}</button>` : ''}`,
     onMount: (el, close) => {
       el.querySelector('#txViewClose').onclick = close;
       el.querySelector('#txViewPrint').onclick = () => printTransaction(t);
-      if (canAct) {
+      if (canApprove) {
         el.querySelector('#txViewApprove').onclick = async () => {
           const ok = await confirmDialog({
             title: tx('اعتماد السند', 'Approve voucher'),
@@ -872,6 +871,8 @@ function openTransaction(id) {
             reloadTransactions();
           } catch (e) { toast(escHtml(friendlyError(e)), 'error'); }
         };
+      }
+      if (canReject) {
         el.querySelector('#txViewReject').onclick = async () => {
           const reason = await promptDialog({
             title: tx('رفض السند', 'Reject voucher'),
@@ -965,9 +966,12 @@ function exportTxs() {
 function openReturn(type) {
   const returnType = String(type || 'RETURN_FROM_CUSTOMER').toUpperCase();
   const permission = returnType === 'RETURN_TO_SUPPLIER' ? 'action:transaction:issue:create' : 'action:transaction:grn:create';
-  if (!canDatabasePermission(permission)) return toast(tx('لا تملك صلاحية إنشاء هذا المرتجع.', 'You do not have permission to create this return.'), 'error');
   const warehouses = accessibleWarehouseOptions();
   const warehouseId = warehouses[0]?.value || '';
+  if (!canDatabasePermission(permission, {
+    resource_type: 'transaction', warehouse_id: warehouseId,
+    owner_id: window.__session?.id, transaction_type: returnType, offline: false
+  })) return toast(tx('لا تملك صلاحية إنشاء هذا المرتجع في المستودع المحدد.', 'You do not have permission to create this return in the selected warehouse.'), 'error');
   const shelves = shelfOptions({ warehouseId });
   const title = returnType === 'RETURN_TO_SUPPLIER'
     ? tx('مرتجع إلى مورد', 'Return to supplier')
@@ -1111,8 +1115,12 @@ function openReturn(type) {
 
 /* ── opening balances (manager-only atomic RPC) ────────────────────────── */
 
-function openingBalanceAllowed() {
-  return canDatabasePermission('action:transaction:opening_balance:create');
+function openingBalanceAllowed(warehouseId = null) {
+  if (!warehouseId) return hasAnyEffectiveCachedGrant('action:transaction:opening_balance:create');
+  return canDatabasePermission('action:transaction:opening_balance:create', {
+    resource_type: 'transaction', warehouse_id: warehouseId,
+    owner_id: window.__session?.id, transaction_type: 'OPENING_BALANCE', offline: false
+  });
 }
 
 function activeRows(table) {
@@ -1345,7 +1353,9 @@ async function submitOpeningRows(rows, close) {
   if (!navigator.onLine) throw new Error(tx('يتطلب إنشاء الأرصدة اتصالاً مباشراً بقاعدة البيانات.', 'Opening-balance creation requires a live database connection.'));
   const liveSession = await ensureOnlineSession();
   if (!liveSession?.id) throw new Error(tx('يتطلب إنشاء الأرصدة جلسة خادم نشطة. سجّل الدخول عبر الإنترنت ثم أعد المحاولة.', 'Opening balances require an active server session. Sign in online and try again.'));
-  if (!openingBalanceAllowed()) throw new Error(tx('إنشاء الأرصدة الافتتاحية متاح للمدير أو المدير الأعلى فقط.', 'Opening balances are restricted to managers and super administrators.'));
+  if (rows.some(row => !openingBalanceAllowed(row.warehouse_id))) {
+    throw new Error(tx('لا تملك تفويض إنشاء الأرصدة الافتتاحية في أحد المستودعات المحددة.', 'You do not have an opening-balance grant for one of the selected warehouses.'));
+  }
   const grouped = new Map();
   const dupes = new Set();
   for (const raw of rows) {
