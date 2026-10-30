@@ -312,7 +312,6 @@ function openSession(id) {
   const p = sessionProgress(s);
   const r = reviewOf(s);
   const showSystem = showSystemColumn(s) && !(String(s.count_mode).toUpperCase() === 'BLIND' && ['DRAFT', 'REJECTED'].includes(r));
-  const editable = isOpen(s) && ['DRAFT', 'REJECTED'].includes(r) && canCount(s);
   const currentUser = window.__session?.id;
   const ownSession = currentUser && (s.created_by === currentUser || s.submitted_by === currentUser);
 
@@ -324,6 +323,7 @@ function openSession(id) {
      ...(showSystem ? [{ label: tx('الفرق', 'Variance'), num: true }] : []),
      { label: tx('الحالة', 'Status') }, { label: tx('ملاحظة', 'Comment') }],
     p.lines.map((l, i) => {
+      const lineEditable = isOpen(s) && ['DRAFT', 'REJECTED'].includes(r) && canCount(s, l);
       const item = store.byId('items', l.item_id);
       const baseUnit = item?.base_unit || l.base_unit || '';
       const altSnapshot = l.entered_unit && l.entered_unit !== baseUnit && l.counted_qty != null
@@ -338,7 +338,7 @@ function openSession(id) {
           shelfPath(l.shelf_id),
           l.batch_no || '—',
           ...(showSystem ? [l.system_qty == null ? '—' : fmtNum(l.system_qty)] : []),
-          editable && !l.is_settled
+          lineEditable && !l.is_settled
             ? `<input class="o_form_input o_count_input" type="number" min="0" step="any" data-count="${l.id}" value="${l.counted_qty ?? ''}" placeholder="—">${baseSnapshot}${altSnapshot}`
             : (l.counted_qty == null ? '—' : `${fmtNum(l.counted_qty)}${baseSnapshot}${altSnapshot}`),
           ...(showSystem ? [`<span class="o_var_cell ${Number(l.variance) > 0 ? 'o_pos' : Number(l.variance) < 0 ? 'o_neg' : 'o_muted'}">${l.variance == null ? '—' : (Number(l.variance) > 0 ? '+' : '') + fmtNum(l.variance)}</span>`] : []),
