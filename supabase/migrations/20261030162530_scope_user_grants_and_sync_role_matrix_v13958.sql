@@ -17,7 +17,8 @@ SET resource_type=CASE
     END,
     warehouse_id=p.assigned_warehouse_ids[1],
     scope_type='WAREHOUSE',
-    grant_reason='Migrated legacy custom permission to a warehouse-scoped grant'
+    valid_until=COALESCE(g.valid_until,now()+interval '90 days'),
+    grant_reason='Migrated legacy custom permission to a warehouse-scoped grant with 90-day review expiry'
 FROM public.profiles p
 WHERE g.subject_type='USER' AND g.user_id=p.id
   AND g.effect IN ('ALLOW','DENY') AND g.revoked_at IS NULL
@@ -54,8 +55,8 @@ BEGIN
          '    RAISE EXCEPTION ''A user subject is required'';' || E'\n' ||
          '  END IF;';
  n:=replace(d,anchor,anchor || E'\n' ||
-   '  IF p_subject_type=''USER'' AND (p_scope_type=''ALL'' OR p_warehouse_id IS NULL OR NULLIF(btrim(COALESCE(p_resource_type,'''')),'''') IS NULL) THEN' || E'\n' ||
-   '    RAISE EXCEPTION ''User grants require a resource type, one warehouse, and OWN/WAREHOUSE/CONTEXT scope'';' || E'\n' ||
+   '  IF p_subject_type=''USER'' AND (p_scope_type=''ALL'' OR p_warehouse_id IS NULL OR NULLIF(btrim(COALESCE(p_resource_type,'''')),'''') IS NULL OR p_valid_until IS NULL OR p_valid_until<=now()) THEN' || E'\n' ||
+   '    RAISE EXCEPTION ''User grants require a resource type, one warehouse, a bounded data scope, and a future expiry'';' || E'\n' ||
    '  END IF;');
  IF n=d THEN RAISE EXCEPTION 'USER grant scope validation anchor not found'; END IF;
  EXECUTE n;
