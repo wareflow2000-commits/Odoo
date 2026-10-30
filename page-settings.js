@@ -23,7 +23,7 @@ import {
 } from './core-api-supabase.js';
 import {
   canManageSettings, canManageSystemSettings, canAdministerProfiles,
-  isAdmin, can, role as userRole
+  canAccessWarehouse, isAdmin, can, role as userRole
 } from './core-rbac.js';
 import { rpc } from './core-supabase.js';
 import {
@@ -181,19 +181,23 @@ const FALLBACK_PERMISSIONS = [
 
 function canManage() { return canManageSettings(); }
 
-function canManageImportEntity(entity, updateExisting = F.import.updateExisting) {
+function canManageImportEntity(entity, action = 'create', existing = null) {
   if (entity === 'warehouses') {
-    const assigned = window.__session?.profile?.assigned_warehouse_ids;
-    return ['SUPER_ADMIN', 'ADMIN'].includes(userRole())
-      && Array.isArray(assigned) && assigned.length === 0
-      && can('action:warehouse:manage');
+    if (action === 'create') {
+      const assigned = window.__session?.profile?.assigned_warehouse_ids;
+      return ['SUPER_ADMIN', 'ADMIN'].includes(userRole())
+        && Array.isArray(assigned) && assigned.length === 0
+        && can('action:warehouse:manage');
+    }
+    return can('action:warehouse:manage')
+      && (!existing || canAccessWarehouse(existing.id));
   }
   if (entity === 'storage_areas' || entity === 'shelves') {
-    return can('action:facility:manage');
+    return can('action:facility:manage')
+      && (!existing || canAccessWarehouse(existing.warehouse_id));
   }
   if (entity === 'items') {
-    return can('action:item:create')
-      && (!updateExisting || can('action:item:update'));
+    return can(action === 'update' ? 'action:item:update' : 'action:item:create');
   }
   return false;
 }
@@ -853,7 +857,8 @@ function refreshImportMappingState(main) {
   }
   const apply = main.querySelector('#importApply');
   if (apply) apply.disabled = !!missing.length || F.import.busy
-    || !canManageImportEntity(F.import.entity, F.import.updateExisting)
+    || (!canManageImportEntity(F.import.entity, 'create')
+      && !(F.import.updateExisting && canManageImportEntity(F.import.entity, 'update')))
     || !navigator.onLine || !!window.__session?.offline;
   const mapped = def.fields.filter(f => F.import.mapping[f.key]).length;
   const count = main.querySelector('#importMappedCount');
@@ -871,7 +876,8 @@ async function applyImport() {
   }
   const def = IMPORT_ENTITIES[x.entity];
   if (!def) return;
-  if (!canManageImportEntity(x.entity, x.updateExisting)) {
+  if (!canManageImportEntity(x.entity, 'create')
+      && !(x.updateExisting && canManageImportEntity(x.entity, 'update'))) {
     toast(tx('لا تملك صلاحية إنشاء أو تحديث هذا النوع من البيانات.', 'You do not have the required create/update permission for this data type.'), 'error');
     return;
   }
@@ -921,6 +927,21 @@ async function applyImport() {
 
   if (errors.length) {
     F.import.result = { ok: false, created: 0, updated: 0, skipped: 0, errors, warnings: [] };
+    reload();
+    return;
+  }
+
+  const deniedRow = prepared.find(row => {
+    const existing = importFindExisting(x.entity, row);
+    if (existing && !x.updateExisting) return false;
+    return !canManageImportEntity(x.entity, existing ? 'update' : 'create', existing);
+  });
+  if (deniedRow) {
+    F.import.result = {
+      ok: false, created: 0, updated: 0, skipped: 0,
+      errors: [`${tx('الصف', 'Row')} ${deniedRow._row}: ${tx('لا تملك صلاحية العملية المطلوبة أو أن السجل خارج نطاق مستودعاتك.', 'You lack the required operation permission or the record is outside your warehouse scope.')}`],
+      warnings: []
+    };
     reload();
     return;
   }
@@ -1003,7 +1024,8 @@ function renderImport(banned) {
   const mappedCount = fields.filter(f => x.mapping[f.key]).length;
   const missing = fields.filter(f => f.required && !x.mapping[f.key]);
   const can = !banned;
-  const entityPermission = canManageImportEntity(x.entity, x.updateExisting);
+  const entityPermission = canManageImportEntity(x.entity, 'create')
+    || (x.updateExisting && canManageImportEntity(x.entity, 'update'));
   const canWrite = can && entityPermission && navigator.onLine && !window.__session?.offline;
   const previewHeaders = x.headers.slice(0, 8);
   const previewRows = x.rows.slice(0, 5);
