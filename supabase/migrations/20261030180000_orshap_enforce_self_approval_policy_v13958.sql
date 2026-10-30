@@ -82,6 +82,8 @@ BEGIN
   v_require_approval boolean := true;';
   v_new := '  v_user_id uuid := (SELECT auth.uid());
   v_actor_role text;
+  v_actor_permissions text[] := ARRAY[]::text[];
+  v_has_create_permission boolean := false;
   v_require_approval boolean := true;';
   IF position(v_new IN v_guard) = 0 THEN
     IF position(v_old IN v_guard) = 0 THEN
@@ -94,6 +96,7 @@ BEGIN
       COALESCE(p.can_approve_without_workflow, false),';
   v_new := '    SELECT
       p.role,
+      COALESCE(p.custom_permissions, ARRAY[]::text[]),
       COALESCE(p.can_approve_without_workflow, false),';
   IF position(v_new IN v_guard) = 0 THEN
     IF position(v_old IN v_guard) = 0 THEN
@@ -103,7 +106,7 @@ BEGIN
   END IF;
 
   v_old := '    INTO v_can_auto_approve, v_has_auto_approve_permission';
-  v_new := '    INTO v_actor_role, v_can_auto_approve, v_has_auto_approve_permission';
+  v_new := '    INTO v_actor_role, v_actor_permissions, v_can_auto_approve, v_has_auto_approve_permission';
   IF position(v_new IN v_guard) = 0 THEN
     IF position(v_old IN v_guard) = 0 THEN
       RAISE EXCEPTION 'status guard INTO clause mismatch; no changes applied';
@@ -113,10 +116,38 @@ BEGIN
 
   v_old := '    IF v_require_approval
        AND NOT (v_can_auto_approve AND v_has_auto_approve_permission) THEN';
-  v_new := '    IF ((v_require_approval
+  v_new := '    SELECT EXISTS (
+      SELECT 1 FROM public.role_permissions rp
+      WHERE rp.role_name = v_actor_role
+        AND rp.permission_key = CASE NEW.transaction_type
+          WHEN ''GRN'' THEN ''action:transaction:grn:create''
+          WHEN ''RETURN_FROM_USAGE'' THEN ''action:transaction:grn:create''
+          WHEN ''RETURN_FROM_CUSTOMER'' THEN ''action:transaction:grn:create''
+          WHEN ''ISSUE'' THEN ''action:transaction:issue:create''
+          WHEN ''RETURN_TO_SUPPLIER'' THEN ''action:transaction:issue:create''
+          WHEN ''ADJUSTMENT_IN'' THEN ''action:transaction:adjustment:create''
+          WHEN ''ADJUSTMENT_OUT'' THEN ''action:transaction:adjustment:create''
+          WHEN ''OPENING_BALANCE'' THEN ''action:transaction:adjustment:create''
+          ELSE NULL
+        END
+    ) OR v_actor_permissions @> ARRAY[
+      CASE NEW.transaction_type
+        WHEN ''GRN'' THEN ''action:transaction:grn:create''
+        WHEN ''RETURN_FROM_USAGE'' THEN ''action:transaction:grn:create''
+        WHEN ''RETURN_FROM_CUSTOMER'' THEN ''action:transaction:grn:create''
+        WHEN ''ISSUE'' THEN ''action:transaction:issue:create''
+        WHEN ''RETURN_TO_SUPPLIER'' THEN ''action:transaction:issue:create''
+        WHEN ''ADJUSTMENT_IN'' THEN ''action:transaction:adjustment:create''
+        WHEN ''ADJUSTMENT_OUT'' THEN ''action:transaction:adjustment:create''
+        WHEN ''OPENING_BALANCE'' THEN ''action:transaction:adjustment:create''
+        ELSE ''action:transaction:never''
+      END
+    ]::text[] INTO v_has_create_permission;
+
+    IF ((v_require_approval
          OR v_actor_role IS NULL
          OR v_actor_role NOT IN (''SUPER_ADMIN'', ''MANAGER'', ''ADMIN''))
-        AND NOT (v_can_auto_approve AND v_has_auto_approve_permission)) THEN';
+        AND NOT (v_can_auto_approve AND v_has_auto_approve_permission AND v_has_create_permission)) THEN';
   IF position(v_new IN v_guard) = 0 THEN
     IF position(v_old IN v_guard) = 0 THEN
       RAISE EXCEPTION 'status guard policy condition mismatch; no changes applied';
