@@ -18,6 +18,7 @@ function render() {
   const pending = q.filter(x => x.status === 'PENDING' || !x.status);
   const errors = q.filter(x => x.status === 'ERROR');
   const conflicts = q.filter(x => x.status === 'CONFLICT');
+  const legacyMasterBlocked = q.some(x => x.source === 'blocked_master');
   const canSync = navigator.onLine && !!window.__session?.id;
 
   return `
@@ -28,13 +29,15 @@ function render() {
      ${btn('', 'onclick="OW.wms.refreshSync()"', 'ghost', 'fa-solid fa-rotate')}`)}
   <div class="o_page_body">
     ${!navigator.onLine
-      ? alertBox(`<b>${tx('لا يوجد اتصال', 'No connection')}</b> — ${tx('تُحفظ العمليات محليًا ولن تُرحَّل أرصدة المخزون حتى يعود الاتصال.',
-        'Operations are stored locally; stock balances are never posted until the connection returns.')}`, 'warning')
+      ? alertBox(`<b>${tx('لا يوجد اتصال', 'No connection')}</b> — ${tx('المسموح حفظه محليًا هو سندات الصرف وعدّ الجرد فقط. جميع تعديلات البيانات الرئيسية وبقية المعاملات تتطلب اتصالًا مباشرًا.',
+        'Only ISSUE vouchers and stocktake counts may be stored offline. Master-data changes and all other transactions require a live connection.')}`, 'warning')
       : window.__session?.offline
         ? alertBox(tx('جلستك محفوظة محليًا. ستحاول المزامنة استعادة جلسة الخادم تلقائيًا؛ إذا فشلت فسجّل الدخول عبر الإنترنت مرة واحدة.',
           'Your session is local. Sync will try to restore the server session automatically; if that fails, sign in online once.'), 'warning')
         : alertBox(tx('العمليات المعلّقة تُرسل بالترتيب. تبقى البيانات المحلية متاحة دائمًا.',
-          'Queued operations replay in order. Local data stays available at all times.'), 'info')}
+          'Pending ISSUE vouchers and stocktake counts sync only after user, warehouse and operation-type validation.'), 'info')}
+    ${legacyMasterBlocked ? alertBox(tx('توجد تعديلات بيانات رئيسية من إصدار سابق. تم عزلها ولن تُرسل تلقائيًا؛ راجعها وأعد إدخال ما يلزم أثناء الاتصال.',
+      'Legacy master-data edits from an older version were quarantined and will not be sent. Review and re-enter required changes while online.'), 'warning') : ''}
     <div class="o_grid" style="grid-template-columns:repeat(4,minmax(0,1fr));margin-top:14px">
       ${statCard({ label: tx('بانتظار الإرسال', 'Pending'), value: fmtNum(pending.length), icon: 'fa-solid fa-hourglass-half', tone: 'amber' })}
       ${statCard({ label: tx('أخطاء', 'Errors'), value: fmtNum(errors.length), icon: 'fa-solid fa-triangle-exclamation', tone: 'red' })}
@@ -51,7 +54,9 @@ function render() {
           return {
             cls: x.status === 'ERROR' ? 'rt-danger' : x.status === 'CONFLICT' ? 'rt-warn' : '',
             cells: [
-              x.source === 'transaction' ? badge(tx('معاملة', 'Transaction'), 'purple') : badge(tx('بيانات أساسية', 'Master data'), 'blue'),
+              x.source === 'transaction' ? badge(tx('صرف', 'Issue'), 'purple')
+                : x.source === 'stocktake' ? badge(tx('عدّ جرد', 'Stocktake count'), 'blue')
+                  : badge(tx('بيانات قديمة محجوبة', 'Blocked legacy data'), 'red'),
               `<code>${esc(x.table || '—')}</code>`,
               esc(x.operation || '—'),
               x.record ? esc(String(x.record).slice(0, 24)) : '—',
@@ -83,7 +88,7 @@ async function syncNow() {
   syncing = true;
   try {
     const res = await syncAll();
-    const n = Number(res.master || 0) + Number(res.transactions || 0);
+    const n = Number(res.transactions || 0) + Number(res.stocktakeCounts || 0);
     const remaining = Number(res.remaining || 0);
     if (remaining) {
       toast(n
