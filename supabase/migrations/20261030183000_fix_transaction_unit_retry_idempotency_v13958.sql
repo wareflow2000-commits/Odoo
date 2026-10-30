@@ -125,6 +125,74 @@ BEGIN
 END;
 $function$;
 
+
+-- Transfer dispatch retries must preserve the unit snapshot on each transfer
+-- line and its paired ledger metadata. The v2 writer verifies base quantities,
+-- while this wrapper verifies the entered-unit evidence before any update.
+DO $transfer_retry$
+DECLARE
+  d text;
+  n text;
+  decl_old text := '  v_st_base text;' || E'\\n' || 'BEGIN';
+  decl_new text := '  v_st_base text;' || E'\\n' ||
+    '  v_already_processed boolean := false;' || E'\\n' ||
+    '  v_existing_transfer public.stock_transfers%ROWTYPE;' || E'\\n' ||
+    'BEGIN';
+  call_old text := '  v_result := public.dispatch_stock_transfer_order_v2(' || E'\\n' ||
+    '    p_order_id, p_reference_no, p_source_warehouse_id,' || E'\\n' ||
+    '    p_destination_warehouse_id, v_lines, p_notes' || E'\\n' ||
+    '  );';
+  call_new text := call_old || E'\\n' ||
+    '  v_already_processed := COALESCE((v_result->>''already_processed'')::boolean,false);';
+  loop_old text := '    IF v_transfer_id IS NULL THEN CONTINUE; END IF;' || E'\\n' || E'\\n' ||
+    '    UPDATE public.stock_transfers';
+  loop_new text := '    IF v_transfer_id IS NULL THEN CONTINUE; END IF;' || E'\\n' ||
+    '    IF v_already_processed THEN' || E'\\n' ||
+    '      SELECT st.* INTO v_existing_transfer' || E'\\n' ||
+    '      FROM public.stock_transfers st' || E'\\n' ||
+    '      WHERE st.id=v_transfer_id AND st.transfer_order_id=p_order_id;' || E'\\n' ||
+    '      IF NOT FOUND THEN' || E'\\n' ||
+    '        RAISE EXCEPTION ''Idempotency conflict: transfer line no longer belongs to the original order'' USING ERRCODE=''23505'';' || E'\\n' ||
+    '      END IF;' || E'\\n' ||
+    '      IF v_existing_transfer.entered_quantity IS DISTINCT FROM (v_line->>''entered_quantity'')::numeric' || E'\\n' ||
+    '         OR upper(COALESCE(v_existing_transfer.entered_unit,'''')) IS DISTINCT FROM upper(COALESCE(v_line->>''entered_unit'',''''))' || E'\\n' ||
+    '         OR v_existing_transfer.conversion_factor IS DISTINCT FROM (v_line->>''conversion_factor'')::numeric' || E'\\n' ||
+    '         OR v_existing_transfer.base_unit IS DISTINCT FROM v_line->>''base_unit'' THEN' || E'\\n' ||
+    '        RAISE EXCEPTION ''Idempotency conflict: transfer line unit evidence differs from the original dispatch request'' USING ERRCODE=''23505'';' || E'\\n' ||
+    '      END IF;' || E'\\n' ||
+    '      CONTINUE;' || E'\\n' ||
+    '    END IF;' || E'\\n' || E'\\n' ||
+    '    UPDATE public.stock_transfers';
+BEGIN
+  SELECT pg_get_functiondef(
+    'public.dispatch_stock_transfer_order_v3(uuid,text,uuid,uuid,jsonb,text)'::regprocedure
+  ) INTO d;
+
+  IF position(decl_new IN d)=0 THEN
+    IF position(decl_old IN d)=0 THEN RAISE EXCEPTION 'Transfer dispatch wrapper declaration anchor not found'; END IF;
+    n:=replace(d,decl_old,decl_new);
+    IF n=d THEN RAISE EXCEPTION 'Could not add transfer dispatch retry state'; END IF;
+    d:=n;
+  END IF;
+
+  IF position(call_new IN d)=0 THEN
+    IF position(call_old IN d)=0 THEN RAISE EXCEPTION 'Transfer dispatch wrapper v2 call anchor not found'; END IF;
+    n:=replace(d,call_old,call_new);
+    IF n=d THEN RAISE EXCEPTION 'Could not capture transfer dispatch idempotency result'; END IF;
+    d:=n;
+  END IF;
+
+  IF position(loop_new IN d)=0 THEN
+    IF position(loop_old IN d)=0 THEN RAISE EXCEPTION 'Transfer dispatch wrapper unit persistence anchor not found'; END IF;
+    n:=replace(d,loop_old,loop_new);
+    IF n=d THEN RAISE EXCEPTION 'Could not protect transfer unit snapshot on retry'; END IF;
+    d:=n;
+  END IF;
+
+  EXECUTE d;
+END;
+$transfer_retry$;
+
 DO $verify$
 DECLARE
   d text;
@@ -139,6 +207,19 @@ BEGIN
      OR position('CONTINUE;' IN d) = 0
      OR position('UNIT_QUANTITY_MISMATCH' IN d) = 0
      OR position('v_existing_line.quantity' IN d) = 0 THEN
+    RAISE EXCEPTION 'Transaction unit idempotency guard verification failed';
+  END IF;
+
+  SELECT pg_get_functiondef(
+    'public.dispatch_stock_transfer_order_v3(uuid,text,uuid,uuid,jsonb,text)'::regprocedure
+  ) INTO d;
+  IF position('v_already_processed' IN d)=0
+     OR position('Idempotency conflict: transfer line unit evidence differs from the original dispatch request' IN d)=0
+     OR position('IF v_already_processed THEN' IN d)=0 THEN
+    RAISE EXCEPTION 'Transfer unit idempotency guard verification failed';
+  END IF;
+
+  -- no additional statements below this point
     RAISE EXCEPTION 'Transaction unit idempotency guard verification failed';
   END IF;
 END;
