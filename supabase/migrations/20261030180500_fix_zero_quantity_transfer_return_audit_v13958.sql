@@ -101,8 +101,6 @@ BEGIN
 
   EXECUTE d;
 
-  EXECUTE d;
-
   SELECT pg_get_functiondef(
     'public.receive_stock_transfer_quantity_at_shelf_v2(uuid,numeric,uuid,boolean,text,uuid)'::regprocedure
   ) INTO wrapper_def;
