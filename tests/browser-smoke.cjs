@@ -497,10 +497,14 @@ const fs = require('fs');
       } = await import('/core-rbac.js');
       const originalSession = window.__session;
       const originalAuthorizationPermissions = store.authorizationPermissions;
+      const originalAuthorizationGrantRows = store.authorizationGrantRows;
+      const originalAuthorizationGrantRowsUserId = store.authorizationGrantRowsUserId;
       store.authorizationPermissions = [];
+      store.authorizationGrantRows = [];
       const roleContract = {};
       for (const role of ['SUPER_ADMIN', 'MANAGER', 'ADMIN', 'WAREHOUSE_MANAGER', 'CLERK']) {
         window.__session = { id: 'role-contract-test', role, profile: { role } };
+        store.authorizationGrantRowsUserId = 'role-contract-test';
         roleContract[role] = {
           profiles: canAdministerProfiles(),
           systemSettings: canManageSystemSettings(),
@@ -529,16 +533,25 @@ const fs = require('fs');
           'table:inventory_ledger:view', 'table:transaction_ledger:view', 'table:audit_logs:view'
         ] }
       };
+      store.authorizationGrantRowsUserId = 'role-contract-custom';
       const legacyCustomPermissionsNotAuthoritative =
         !canDatabasePermission('action:transaction:issue:create')
         && !canAccessPage('inventory');
-      store.authorizationPermissions = [
+      const explicitKeys = [
         'action:stocktake:start', 'action:transaction:issue:create',
         'page:inventory:access', 'action:stocktake:view_system_qty',
         'action:transaction:approve', 'action:settings:manage',
         'action:transaction:opening_balance:create', 'action:chat:manage',
         'table:inventory_ledger:view', 'table:transaction_ledger:view', 'table:audit_logs:view'
       ];
+      store.authorizationGrantRows = explicitKeys.map((permission_key, index) => ({
+        id: 'role-contract-grant-' + index, subject_type: 'ROLE', permission_key,
+        effect: 'ALLOW', resource_type: null, resource_id: null, warehouse_id: null,
+        scope_type: 'ALL', conditions: {}, valid_from: new Date(Date.now() - 60000).toISOString(),
+        valid_until: null
+      }));
+      store.authorizationGrantRowsUserId = 'role-contract-custom';
+      store.authorizationPermissions = explicitKeys;
       const warehouseManagerExplicitGrant = canDatabasePermission('action:stocktake:start')
         && can('action:transaction:issue:create') && canAccessPage('inventory')
         && canCreateTransactionType('ISSUE') && canViewSystemQty() && canApproveTransactions()
@@ -554,9 +567,13 @@ const fs = require('fs');
         profile: { role: 'WAREHOUSE_MANAGER', custom_permissions: ['*'] }
       };
       store.authorizationPermissions = ['*'];
+      store.authorizationGrantRows = [];
+      store.authorizationGrantRowsUserId = 'role-contract-wildcard';
       const wildcardDoesNotBypassDatabase = !can('action:transaction:issue:create')
         && !canAccessPage('inventory');
       store.authorizationPermissions = originalAuthorizationPermissions;
+      store.authorizationGrantRows = originalAuthorizationGrantRows;
+      store.authorizationGrantRowsUserId = originalAuthorizationGrantRowsUserId;
       window.__session = originalSession;
       const nonSuperAdminRoles = Object.keys(roleContract).filter(name => name !== 'SUPER_ADMIN');
       const permissionRoleContract = roleContract.SUPER_ADMIN.profiles
@@ -567,6 +584,8 @@ const fs = require('fs');
       const cacheKey = 'orshap_wms_data_v5';
       const originalSnapshot = localStorage.getItem(cacheKey);
       const originalCachedPermissions = store.authorizationPermissions;
+      const originalCachedGrantRows = store.authorizationGrantRows;
+      const originalCachedGrantRowsUserId = store.authorizationGrantRowsUserId;
       const originalRoleRows = store.data.role_permissions;
       const originalScopeLoaded = store.scopeConfigLoaded;
       const originalLoaded = store.loaded;
@@ -580,13 +599,17 @@ const fs = require('fs');
         role_permissions: [{ role_name: 'CLERK', permission_key: 'action:transaction:issue:create' }]
       }));
       const cacheLoaded = loadLocal();
-      const cachePermissionMigration = cacheLoaded
-        && store.authorizationPermissions.includes('action:transaction:issue:create')
-        && store.authorizationPermissions.includes('action:stocktake:count')
-        && Array.isArray(JSON.parse(localStorage.getItem(cacheKey) || '{}').__authorization_permissions);
+      const migratedSnapshot = JSON.parse(localStorage.getItem(cacheKey) || '{}');
+      const legacyCacheFailsClosed = cacheLoaded
+        && store.authorizationGrantRows.length === 0
+        && store.authorizationPermissions.length === 0
+        && Array.isArray(migratedSnapshot.__authorization_grants)
+        && migratedSnapshot.__authorization_grants.length === 0;
       if (originalSnapshot === null) localStorage.removeItem(cacheKey);
       else localStorage.setItem(cacheKey, originalSnapshot);
       store.authorizationPermissions = originalCachedPermissions;
+      store.authorizationGrantRows = originalCachedGrantRows;
+      store.authorizationGrantRowsUserId = originalCachedGrantRowsUserId;
       store.data.role_permissions = originalRoleRows;
       store.scopeConfigLoaded = originalScopeLoaded;
       store.loaded = originalLoaded;
