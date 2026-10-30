@@ -1715,8 +1715,10 @@ function userModal(id) {
       <div class="o_field full"><label class="o_checkbox">
         <input type="checkbox" name="can_approve_without_workflow" ${u.can_approve_without_workflow ? 'checked' : ''}>
         ${tx('يمكنه الاعتماد دون سير عمل', 'Can approve without workflow')}</label></div>
-      ${textarea({ name: 'custom_permissions', label: tx('صلاحيات مخصصة (سطر لكل صلاحية)', 'Custom permissions (one per line)'),
-        value: (u.custom_permissions || []).join('\n'), rows: 5 })}
+      <div class="o_field full">${alertBox(tx(
+        'التفويضات الفردية لم تعد تُدار كقائمة صلاحيات عامة. استخدم تبويب «التفويض المتقدم» لمنح إجراء محدد على مورد ومستودع ونطاق بيانات معلوم، مع سبب المنح.',
+        'Individual permissions are no longer maintained as an unrestricted key list. Use Advanced Authorization to grant a specific action on a resource, warehouse and data scope with an auditable reason.'
+      ), 'info')}</div>
     </form>`;
   modal({
     title: `<i class="fa-solid fa-user-gear"></i> ${tx('تعديل مستخدم', 'Edit user')}`,
@@ -1739,7 +1741,6 @@ function userModal(id) {
             status: d.status,
             assigned_warehouse_ids: warehouseIds,
             can_approve_without_workflow: !!form.querySelector('[name="can_approve_without_workflow"]')?.checked,
-            custom_permissions: String(d.custom_permissions || '').split(/\n+/).map(s => s.trim()).filter(Boolean)
           });
           close();
           toast(tx('تم تحديث المستخدم', 'User updated'), 'success');
