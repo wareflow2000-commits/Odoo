@@ -287,6 +287,9 @@ const fs = require('fs');
         && queueSnapshot().every(x => x.source !== 'stocktake');
 
       return { factorConflict, reenteredWithCorrectFactor, firstSyncOnce, secondSyncIdempotent,
+        conflictResult: { conflicts: conflictResult.conflicts, pending: conflictResult.pending, stocktakeCounts: conflictResult.stocktakeCounts },
+        queueAfterConflict: queueAfterConflict.map(row => ({ status: row.status, attempts: row.attempts, last_error: row.last_error, factor: row.conversion_factor })),
+        callsAfterConflict: countRpcCalls,
         countRpcCalls, firstSyncCount: firstSync.stocktakeCounts, secondSyncCount: secondSync.stocktakeCounts };
     });
     const syncFailures = Object.entries(syncChecks).filter(([key, value]) =>
