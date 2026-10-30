@@ -1,6 +1,6 @@
 /* OW service worker: app-shell caching only. Remote business data is never cached here. */
 'use strict';
-const CACHE_NAME = 'ow-wms-shell-v13-9-59-r12';
+const CACHE_NAME = 'ow-wms-shell-v13-9-59-r13';
 const APP_SHELL = [
   './index.html',
   './manifest.webmanifest',
