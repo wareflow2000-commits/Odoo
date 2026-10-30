@@ -133,35 +133,35 @@ DO $transfer_retry$
 DECLARE
   d text;
   n text;
-  decl_old text := '  v_st_base text;' || E'\\n' || 'BEGIN';
-  decl_new text := '  v_st_base text;' || E'\\n' ||
-    '  v_already_processed boolean := false;' || E'\\n' ||
-    '  v_existing_transfer public.stock_transfers%ROWTYPE;' || E'\\n' ||
+  decl_old text := '  v_st_base text;' || E'\n' || 'BEGIN';
+  decl_new text := '  v_st_base text;' || E'\n' ||
+    '  v_already_processed boolean := false;' || E'\n' ||
+    '  v_existing_transfer public.stock_transfers%ROWTYPE;' || E'\n' ||
     'BEGIN';
-  call_old text := '  v_result := public.dispatch_stock_transfer_order_v2(' || E'\\n' ||
-    '    p_order_id, p_reference_no, p_source_warehouse_id,' || E'\\n' ||
-    '    p_destination_warehouse_id, v_lines, p_notes' || E'\\n' ||
+  call_old text := '  v_result := public.dispatch_stock_transfer_order_v2(' || E'\n' ||
+    '    p_order_id, p_reference_no, p_source_warehouse_id,' || E'\n' ||
+    '    p_destination_warehouse_id, v_lines, p_notes' || E'\n' ||
     '  );';
-  call_new text := call_old || E'\\n' ||
+  call_new text := call_old || E'\n' ||
     '  v_already_processed := COALESCE((v_result->>''already_processed'')::boolean,false);';
-  loop_old text := '    IF v_transfer_id IS NULL THEN CONTINUE; END IF;' || E'\\n' || E'\\n' ||
+  loop_old text := '    IF v_transfer_id IS NULL THEN CONTINUE; END IF;' || E'\n' || E'\n' ||
     '    UPDATE public.stock_transfers';
-  loop_new text := '    IF v_transfer_id IS NULL THEN CONTINUE; END IF;' || E'\\n' ||
-    '    IF v_already_processed THEN' || E'\\n' ||
-    '      SELECT st.* INTO v_existing_transfer' || E'\\n' ||
-    '      FROM public.stock_transfers st' || E'\\n' ||
-    '      WHERE st.id=v_transfer_id AND st.transfer_order_id=p_order_id;' || E'\\n' ||
-    '      IF NOT FOUND THEN' || E'\\n' ||
-    '        RAISE EXCEPTION ''Idempotency conflict: transfer line no longer belongs to the original order'' USING ERRCODE=''23505'';' || E'\\n' ||
-    '      END IF;' || E'\\n' ||
-    '      IF v_existing_transfer.entered_quantity IS DISTINCT FROM (v_line->>''entered_quantity'')::numeric' || E'\\n' ||
-    '         OR upper(COALESCE(v_existing_transfer.entered_unit,'''')) IS DISTINCT FROM upper(COALESCE(v_line->>''entered_unit'',''''))' || E'\\n' ||
-    '         OR v_existing_transfer.conversion_factor IS DISTINCT FROM (v_line->>''conversion_factor'')::numeric' || E'\\n' ||
-    '         OR v_existing_transfer.base_unit IS DISTINCT FROM v_line->>''base_unit'' THEN' || E'\\n' ||
-    '        RAISE EXCEPTION ''Idempotency conflict: transfer line unit evidence differs from the original dispatch request'' USING ERRCODE=''23505'';' || E'\\n' ||
-    '      END IF;' || E'\\n' ||
-    '      CONTINUE;' || E'\\n' ||
-    '    END IF;' || E'\\n' || E'\\n' ||
+  loop_new text := '    IF v_transfer_id IS NULL THEN CONTINUE; END IF;' || E'\n' ||
+    '    IF v_already_processed THEN' || E'\n' ||
+    '      SELECT st.* INTO v_existing_transfer' || E'\n' ||
+    '      FROM public.stock_transfers st' || E'\n' ||
+    '      WHERE st.id=v_transfer_id AND st.transfer_order_id=p_order_id;' || E'\n' ||
+    '      IF NOT FOUND THEN' || E'\n' ||
+    '        RAISE EXCEPTION ''Idempotency conflict: transfer line no longer belongs to the original order'' USING ERRCODE=''23505'';' || E'\n' ||
+    '      END IF;' || E'\n' ||
+    '      IF v_existing_transfer.entered_quantity IS DISTINCT FROM (v_line->>''entered_quantity'')::numeric' || E'\n' ||
+    '         OR upper(COALESCE(v_existing_transfer.entered_unit,'''')) IS DISTINCT FROM upper(COALESCE(v_line->>''entered_unit'',''''))' || E'\n' ||
+    '         OR v_existing_transfer.conversion_factor IS DISTINCT FROM (v_line->>''conversion_factor'')::numeric' || E'\n' ||
+    '         OR v_existing_transfer.base_unit IS DISTINCT FROM v_line->>''base_unit'' THEN' || E'\n' ||
+    '        RAISE EXCEPTION ''Idempotency conflict: transfer line unit evidence differs from the original dispatch request'' USING ERRCODE=''23505'';' || E'\n' ||
+    '      END IF;' || E'\n' ||
+    '      CONTINUE;' || E'\n' ||
+    '    END IF;' || E'\n' || E'\n' ||
     '    UPDATE public.stock_transfers';
 BEGIN
   SELECT pg_get_functiondef(
