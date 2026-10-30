@@ -162,10 +162,24 @@ export function loadLocal() {
       if (Array.isArray(parsed[t])) store.data[t] = parsed[t];
     }
     store.scopeConfigLoaded = parsed.__scope_config_loaded === true;
-    store.authorizationPermissions = Array.isArray(parsed.__authorization_permissions)
-      ? parsed.__authorization_permissions.filter(x => typeof x === 'string') : [];
+    if (Array.isArray(parsed.__authorization_permissions)) {
+      store.authorizationPermissions = parsed.__authorization_permissions.filter(x => typeof x === 'string');
+    } else {
+      // One-time migration for snapshots written before effective grants were
+      // cached. These legacy keys are only an offline UI hint; every sync/write
+      // is re-authorized against authorization_grants by the database.
+      const roleName = String(window.__session?.role || window.__session?.profile?.role || '').toUpperCase();
+      const cachedRoleKeys = store.get('role_permissions')
+        .filter(row => String(row.role_name || '').toUpperCase() === roleName)
+        .map(row => row.permission_key);
+      const cachedUserKeys = Array.isArray(window.__session?.profile?.custom_permissions)
+        ? window.__session.profile.custom_permissions : [];
+      store.authorizationPermissions = [...new Set([...cachedRoleKeys, ...cachedUserKeys]
+        .filter(x => typeof x === 'string'))];
+    }
     enrichAll();
     store.loaded = true;
+    if (!Array.isArray(parsed.__authorization_permissions)) persist(true);
     return true;
   } catch (e) {
     console.warn('[store] local load failed', e);
