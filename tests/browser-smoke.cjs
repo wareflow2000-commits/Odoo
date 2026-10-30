@@ -29,6 +29,24 @@ const fs = require('fs');
     );
     if (horizontalOverflow) throw new Error('Login page has horizontal overflow at 390px width');
 
+    // Render every settings tab in Chromium to catch permission-gate regressions
+    // and runtime reference errors without issuing any Supabase mutations.
+    const settingsTabChecks = await page.evaluate(async () => {
+      await import('/page-settings.js');
+      const settingsPage = window.OW?.pages?.settings;
+      if (typeof settingsPage?.render !== 'function') return {};
+      const result = {};
+      for (const tab of ['general', 'users', 'roles', 'units', 'categories', 'import', 'data']) {
+        window.OW.wms.settingsTab(tab);
+        result[tab] = typeof settingsPage.render() === 'string';
+      }
+      window.OW.wms.settingsTab('general');
+      return result;
+    });
+    if (Object.keys(settingsTabChecks).length !== 7 || Object.values(settingsTabChecks).some(value => value !== true)) {
+      throw new Error('Settings tab render checks failed: ' + JSON.stringify(settingsTabChecks));
+    }
+
     // Exercise the real store module in Chromium with isolated in-memory fixtures.
     // No Supabase writes are performed: the browser is deliberately put offline.
     const offlineChecks = await page.evaluate(async () => {
