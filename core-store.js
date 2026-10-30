@@ -142,6 +142,10 @@ export function loadLocal() {
       store.authorizationPermissions = [];
       store.authorizationPermissionsUserId = null;
       store.scopeConfigLoaded = false;
+      store.noWarehouseAccess = !!window.__session?.id
+        && !ELEVATED_ROLES.includes(String(window.__session?.role || '').toUpperCase())
+        && !(Array.isArray(window.__session?.profile?.assigned_warehouse_ids)
+          && window.__session.profile.assigned_warehouse_ids.length);
       store.loaded = false;
       enrichAll();
       return false;
@@ -151,6 +155,7 @@ export function loadLocal() {
       for (const t of TABLES) store.data[t] = [];
       store.authorizationPermissions = [];
       store.authorizationPermissionsUserId = null;
+      store.scopeConfigLoaded = false;
       store.scopeConfigLoaded = false;
       store.loaded = false;
       enrichAll();
@@ -171,6 +176,7 @@ export function loadLocal() {
         && !ELEVATED_ROLES.includes(String(window.__session?.role || '').toUpperCase())
         && !(Array.isArray(window.__session?.profile?.assigned_warehouse_ids)
           && window.__session.profile.assigned_warehouse_ids.length);
+      store.scopeConfigLoaded = false;
       store.loaded = false;
       enrichAll();
       return false;
@@ -182,7 +188,8 @@ export function loadLocal() {
     store.scopeConfigLoaded = parsed.__scope_config_loaded === true;
     if (Array.isArray(parsed.__authorization_permissions)) {
       store.authorizationPermissions = parsed.__authorization_permissions.filter(x => typeof x === 'string');
-      store.authorizationPermissionsUserId = parsed.__authorization_permissions_user_id === currentUserId()
+      const permissionOwner = parsed.__authorization_permissions_user_id || parsed.__cached_user_id;
+      store.authorizationPermissionsUserId = permissionOwner === currentUserId()
         ? currentUserId() : null;
       if (store.authorizationPermissionsUserId === null) store.authorizationPermissions = [];
     } else {
@@ -204,6 +211,16 @@ export function loadLocal() {
     if (!Array.isArray(parsed.__authorization_permissions)) persist(true);
     return true;
   } catch (e) {
+    for (const t of TABLES) store.data[t] = [];
+    store.authorizationPermissions = [];
+    store.authorizationPermissionsUserId = null;
+    store.scopeConfigLoaded = false;
+    store.loaded = false;
+    store.noWarehouseAccess = !!window.__session?.id
+      && !ELEVATED_ROLES.includes(String(window.__session?.role || '').toUpperCase())
+      && !(Array.isArray(window.__session?.profile?.assigned_warehouse_ids)
+        && window.__session.profile.assigned_warehouse_ids.length);
+    enrichAll();
     console.warn('[store] local load failed', e);
     return false;
   }
