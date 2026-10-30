@@ -449,6 +449,9 @@ const fs = require('fs');
         warehouse_id: warehouseId, scope_type: 'WAREHOUSE', conditions: { offline: true },
         valid_from: new Date(Date.now() - 60000).toISOString(), valid_until: null
       }];
+      store.scopeConfigLoaded = true;
+      store.legacyMasterDataNeedsRefresh = false;
+      store.data.role_warehouse_scopes = [];
       store.authorizationGrantRowsUserId = userId;
       store.authorizationPermissions = ['action:stocktake:count'];
       store.authorizationPermissionsUserId = userId;
