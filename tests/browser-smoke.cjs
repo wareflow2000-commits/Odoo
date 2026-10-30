@@ -359,6 +359,8 @@ const fs = require('fs');
         id: userId, role: 'CLERK', offline: true,
         profile: { id: userId, assigned_warehouse_ids: [warehouseId], accessible_warehouse_ids: [warehouseId] }
       };
+      store.authorizationPermissions = ['action:stocktake:count'];
+      store.authorizationPermissionsUserId = userId;
       Object.defineProperty(navigator, 'onLine', { configurable: true, value: false });
       for (const key of Object.keys(localStorage)) {
         if (key.startsWith('orshap_stocktake_count_queue_v1:')) localStorage.removeItem(key);
