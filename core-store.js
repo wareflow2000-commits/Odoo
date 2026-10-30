@@ -66,6 +66,7 @@ export const store = {
   loading: false,
   error: null,
   authorizationPermissions: [],
+  authorizationPermissionsUserId: null,
   listeners: new Set(),
   get(table) { return this.data[table] || (this.data[table] = []); },
   byId(table, id) { return this.get(table).find(r => r.id === id) || null; },
@@ -118,7 +119,7 @@ let persistTimer = null;
 export function persist(immediate = false) {
   const write = () => {
     try {
-      const payload = { ...store.data, __cached_user_id: currentUserId(), __scope_config_loaded: store.scopeConfigLoaded === true, __authorization_permissions: store.authorizationPermissions, __saved_at: new Date().toISOString() };
+      const payload = { ...store.data, __cached_user_id: currentUserId(), __scope_config_loaded: store.scopeConfigLoaded === true, __authorization_permissions: store.authorizationPermissions, __authorization_permissions_user_id: store.authorizationPermissionsUserId, __saved_at: new Date().toISOString() };
       localStorage.setItem(LS_KEY, JSON.stringify(payload));
       if (window.orshapSQLite?.saveState) {
         window.orshapSQLite.saveState(store.data).catch(() => {});
@@ -136,9 +137,25 @@ export function loadLocal() {
   try {
     quarantineLegacyMasterQueue();
     const raw = localStorage.getItem(LS_KEY);
-    if (!raw) return false;
+    if (!raw) {
+      for (const t of TABLES) store.data[t] = [];
+      store.authorizationPermissions = [];
+      store.authorizationPermissionsUserId = null;
+      store.scopeConfigLoaded = false;
+      store.loaded = false;
+      enrichAll();
+      return false;
+    }
     const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object') return false;
+    if (!parsed || typeof parsed !== 'object') {
+      for (const t of TABLES) store.data[t] = [];
+      store.authorizationPermissions = [];
+      store.authorizationPermissionsUserId = null;
+      store.scopeConfigLoaded = false;
+      store.loaded = false;
+      enrichAll();
+      return false;
+    }
 
     // Never hydrate a cached snapshot unless it is bound to the currently
     // authenticated/offline-verified user. Queues are already user-keyed, but
@@ -149,6 +166,7 @@ export function loadLocal() {
     if (!activeUserId || !parsed.__cached_user_id || parsed.__cached_user_id !== activeUserId) {
       for (const t of TABLES) store.data[t] = [];
       store.authorizationPermissions = [];
+      store.authorizationPermissionsUserId = null;
       store.noWarehouseAccess = !!activeUserId
         && !ELEVATED_ROLES.includes(String(window.__session?.role || '').toUpperCase())
         && !(Array.isArray(window.__session?.profile?.assigned_warehouse_ids)
@@ -164,6 +182,9 @@ export function loadLocal() {
     store.scopeConfigLoaded = parsed.__scope_config_loaded === true;
     if (Array.isArray(parsed.__authorization_permissions)) {
       store.authorizationPermissions = parsed.__authorization_permissions.filter(x => typeof x === 'string');
+      store.authorizationPermissionsUserId = parsed.__authorization_permissions_user_id === currentUserId()
+        ? currentUserId() : null;
+      if (store.authorizationPermissionsUserId === null) store.authorizationPermissions = [];
     } else {
       // One-time migration for snapshots written before effective grants were
       // cached. These legacy keys are only an offline UI hint; every sync/write
@@ -176,6 +197,7 @@ export function loadLocal() {
         ? window.__session.profile.custom_permissions : [];
       store.authorizationPermissions = [...new Set([...cachedRoleKeys, ...cachedUserKeys]
         .filter(x => typeof x === 'string'))];
+      store.authorizationPermissionsUserId = currentUserId();
     }
     enrichAll();
     store.loaded = true;
@@ -336,9 +358,13 @@ export async function pullAll({ silent = false } = {}) {
       const permissionKeys = await rpc('current_user_authorization_permissions');
       store.authorizationPermissions = Array.isArray(permissionKeys)
         ? permissionKeys.filter(x => typeof x === 'string') : [];
+      store.authorizationPermissionsUserId = currentUserId();
     } catch (permissionError) {
-      store.authorizationPermissions = [];
-      console.warn('[store] effective authorization permissions unavailable; UI permissions fail closed:', permissionError?.message || permissionError);
+      if (store.authorizationPermissionsUserId !== currentUserId()) {
+        store.authorizationPermissions = [];
+        store.authorizationPermissionsUserId = null;
+      }
+      console.warn('[store] effective authorization permissions unavailable; preserving only this user\'s cached grant keys:', permissionError?.message || permissionError);
     }
     store.scopeConfigLoaded = results.some(([t, list]) => t === 'role_warehouse_scopes' && list !== null);
     if (store.legacyMasterDataNeedsRefresh
