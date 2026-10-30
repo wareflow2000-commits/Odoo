@@ -1548,7 +1548,7 @@ function authorizationGrantModal() {
       <select name="permission_key" required>${permissions.map(p => `<option value="${esc(p.key)}">${esc(permissionLabel(p.key))} — ${esc(p.key)}</option>`).join('')}</select></div>
     <div class="o_field"><label>${tx('الأثر', 'Effect')}</label>
       <select name="effect"><option value="ALLOW">${tx('سماح', 'Allow')}</option><option value="DENY">${tx('منع', 'Deny')}</option></select></div>
-    <div class="o_field"><label>${tx('نوع المورد', 'Resource type')}</label><input name="resource_type" placeholder="transactions / stocktake_sessions"></div>
+    <div class="o_field"><label>${tx('نوع المورد', 'Resource type')}</label><input name="resource_type" placeholder="transaction / stocktake_session / stock_transfer / stock_transfer_order"></div>
     <div class="o_field"><label>${tx('معرّف السجل (اختياري)', 'Resource record ID (optional)')}</label><input name="resource_id" placeholder="UUID"></div>
     <div class="o_field"><label>${tx('المستودع', 'Warehouse')}</label>
       <select name="warehouse_id"><option value="">— ${tx('كل المستودعات ضمن نطاق المستخدم', 'All warehouses within user scope')} —</option>${warehouses.map(w => `<option value="${esc(w.id)}">${esc(w.code || '')} — ${esc(w.name || '')}</option>`).join('')}</select></div>
@@ -1572,6 +1572,14 @@ function authorizationGrantModal() {
       const scopeSelect = form.querySelector('#authScopeType');
       const warehouseSelect = form.querySelector('[name="warehouse_id"]');
       const resourceTypeInput = form.querySelector('[name="resource_type"]');
+      const permissionSelect = form.querySelector('[name="permission_key"]');
+      const resourceTypeForPermission = key => {
+        if (key.startsWith('action:transaction:')) return 'transaction';
+        if (key.startsWith('action:stocktake:')) return 'stocktake_session';
+        if (key === 'action:stock_transfer:create') return 'stock_transfer_order';
+        if (key.startsWith('action:stock_transfer:')) return 'stock_transfer';
+        return '';
+      };
       const syncSubject = () => {
         const isUserGrant = subjectType.value === 'USER';
         form.querySelector('#authUserWrap').style.display = isUserGrant ? '' : 'none';
@@ -1579,11 +1587,28 @@ function authorizationGrantModal() {
         const allOption = scopeSelect.querySelector('option[value="ALL"]');
         allOption.disabled = isUserGrant;
         if (isUserGrant && scopeSelect.value === 'ALL') scopeSelect.value = 'WAREHOUSE';
-        warehouseSelect.required = isUserGrant;
+        if (!isUserGrant && scopeSelect.value === 'WAREHOUSE' && !warehouseSelect.value) scopeSelect.value = 'ALL';
+        [...permissionSelect.options].forEach(option => {
+          const supported = !!resourceTypeForPermission(option.value);
+          option.hidden = isUserGrant && !supported;
+          option.disabled = isUserGrant && !supported;
+        });
+        if (isUserGrant && !resourceTypeForPermission(permissionSelect.value)) {
+          const firstSupported = [...permissionSelect.options].find(option => !!resourceTypeForPermission(option.value));
+          if (firstSupported) permissionSelect.value = firstSupported.value;
+        }
+        resourceTypeInput.value = isUserGrant ? resourceTypeForPermission(permissionSelect.value) : resourceTypeInput.value;
+        resourceTypeInput.readOnly = isUserGrant;
         resourceTypeInput.required = isUserGrant;
+        resourceTypeInput.placeholder = isUserGrant
+          ? 'transaction / stocktake_session / stock_transfer / stock_transfer_order'
+          : 'Optional for global role grants';
+        warehouseSelect.required = isUserGrant || scopeSelect.value === 'WAREHOUSE';
         warehouseSelect.disabled = !isUserGrant && scopeSelect.value === 'ALL';
       };
       subjectType.onchange = syncSubject;
+      permissionSelect.onchange = syncSubject;
+      scopeSelect.onchange = syncSubject;
       syncSubject();
       el.querySelector('#authGrantCancel').onclick = close;
       el.querySelector('#authGrantSave').onclick = async () => {
