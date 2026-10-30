@@ -54,7 +54,6 @@ export const TABLES = [
 ];
 
 export const ELEVATED_ROLES = ['SUPER_ADMIN', 'ADMIN', 'MANAGER', 'WAREHOUSE_MANAGER'];
-export const AUTO_APPROVE_ROLES = ['SUPER_ADMIN', 'ADMIN', 'MANAGER', 'WAREHOUSE_MANAGER'];
 
 export const store = {
   data: Object.fromEntries(TABLES.map(t => [t, []])),
@@ -889,10 +888,46 @@ export async function syncAll() {
 const VOUCHER_TYPES = new Set(['GRN', 'ISSUE', 'ADJUSTMENT_IN', 'ADJUSTMENT_OUT']);
 const RETURN_TYPES = new Set(['RETURN_FROM_USAGE', 'RETURN_FROM_CUSTOMER', 'RETURN_TO_SUPPLIER']);
 
-export function shouldAutoApprove() {
-  if (AUTO_APPROVE_ROLES.includes(roleOf())) return true;
-  const require = setting('REQUIRE_APPROVAL', true);
-  return require === false || require === 'false' || require === '0';
+export const AUTO_APPROVE_CREATE_PERMISSION = Object.freeze({
+  GRN: 'action:transaction:grn:create',
+  RETURN_FROM_USAGE: 'action:transaction:grn:create',
+  RETURN_FROM_CUSTOMER: 'action:transaction:grn:create',
+  ISSUE: 'action:transaction:issue:create',
+  RETURN_TO_SUPPLIER: 'action:transaction:issue:create',
+  ADJUSTMENT_IN: 'action:transaction:adjustment:create',
+  ADJUSTMENT_OUT: 'action:transaction:adjustment:create',
+  OPENING_BALANCE: 'action:transaction:adjustment:create'
+});
+
+// Mirrors approve_transaction + guard_transaction_status_change.
+// A creator may auto-approve only through the explicit per-user flag and
+// both required grants, unless global approval is disabled for an elevated
+// database role. Unknown or unloaded authorization inputs fail closed.
+export function shouldAutoApprove(transactionType) {
+  const session = window.__session;
+  if (!session?.id) return false;
+  const actorRole = String(session.role || '').toUpperCase();
+  const requireApproval = setting('REQUIRE_APPROVAL', true) !== false;
+
+  if (!requireApproval && ['SUPER_ADMIN', 'MANAGER', 'ADMIN'].includes(actorRole)) {
+    return true;
+  }
+
+  const profile = session.profile?.id === session.id
+    ? session.profile
+    : store.get('profiles').find(row => row.id === session.id) || null;
+  if (!profile || profile.can_approve_without_workflow !== true) return false;
+
+  const createPermission = AUTO_APPROVE_CREATE_PERMISSION[String(transactionType || '').toUpperCase()];
+  if (!createPermission) return false;
+
+  const roleGrants = store.get('role_permissions')
+    .filter(row => String(row.role_name || '').toUpperCase() === actorRole)
+    .map(row => row.permission_key);
+  const customGrants = Array.isArray(profile.custom_permissions) ? profile.custom_permissions : [];
+  const hasGrant = key => roleGrants.includes(key) || customGrants.includes(key);
+
+  return hasGrant('action:transaction:auto_approve') && hasGrant(createPermission);
 }
 
 export async function createTransactionBundle({
@@ -1018,7 +1053,7 @@ export async function createTransactionBundle({
   }
 
   let approved = false;
-  if (shouldAutoApprove()) {
+  if (shouldAutoApprove(normalizedType)) {
     try { await rpc('approve_transaction', { p_transaction_id: tx.id }); approved = true; }
     catch (e) { console.warn('[store] auto-approval failed', e); }
   }
