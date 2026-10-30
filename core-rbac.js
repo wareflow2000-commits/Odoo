@@ -66,6 +66,7 @@ export function accessibleWarehouseIds() {
 }
 
 export function canAccessWarehouse(warehouseId) {
+  if (!warehouseId) return false;
   const allowed = accessibleWarehouseIds();
   if (allowed === null) return true;
   return allowed.includes(warehouseId);
