@@ -93,20 +93,27 @@ const fs = require('fs');
       window.__session.profile.assigned_warehouse_ids = [warehouseId, '66666666-6666-4666-8666-666666666666'];
       const multiWarehouseDenied = !offlineWarehouseAllowed(warehouseId);
       window.__session.profile.assigned_warehouse_ids = [warehouseId];
+      const originalAuthorizationPermissions = store.authorizationPermissions;
+      store.authorizationPermissions = ['action:stocktake:count'];
       const saved = await saveStocktakeCount(lineId, 2, 'BOX');
-      // Offline ownership must mirror the database creator-or-explicit-manage rule.
-      // No role name (including MANAGER and ADMIN) grants an implicit bypass.
+      // Session creation and count execution are separate grants. Neither
+      // MANAGER nor ADMIN bypasses the count grant, but a delegated counter
+      // with an explicit grant may count a session created by another user.
       const originalCreator = store.data.stocktake_sessions[0].created_by;
       const originalRole = window.__session.role;
       store.data.stocktake_sessions[0].created_by = '88888888-8888-4888-8888-888888888888';
+      store.authorizationPermissions = [];
       window.__session.role = 'ADMIN';
-      const adminCannotCountAnotherUsersSession = await expectBlocked(() => saveStocktakeCount(lineId, 3, 'BOX'));
+      const adminCannotCountWithoutGrant = await expectBlocked(() => saveStocktakeCount(lineId, 3, 'BOX'));
       window.__session.role = 'MANAGER';
-      const managerCannotCountAnotherUsersSession = await expectBlocked(() => saveStocktakeCount(lineId, 3, 'BOX'));
+      const managerCannotCountWithoutGrant = await expectBlocked(() => saveStocktakeCount(lineId, 3, 'BOX'));
       window.__session.role = 'WAREHOUSE_MANAGER';
-      const warehouseManagerCannotCountAnotherUsersSession = await expectBlocked(() => saveStocktakeCount(lineId, 3, 'BOX'));
+      const warehouseManagerCannotCountWithoutGrant = await expectBlocked(() => saveStocktakeCount(lineId, 3, 'BOX'));
+      store.authorizationPermissions = ['action:stocktake:count'];
+      const delegatedCounterAllowed = await saveStocktakeCount(lineId, 4, 'BOX');
       store.data.stocktake_sessions[0].created_by = originalCreator;
       window.__session.role = originalRole;
+      store.authorizationPermissions = originalAuthorizationPermissions;
       const queued = queueSnapshot().some(row =>
         row.source === 'stocktake' && row.status === 'PENDING'
       );
@@ -140,9 +147,10 @@ const fs = require('fs');
         multiWarehouseDenied, blockedMasterWrites: blockedMasterWrites.every(Boolean),
         legacyMasterQuarantined, legacyQueueBlocksFurtherOfflineWork, noOptimisticMasterWrite,
         countQueued: !!saved.pending_sync && queued,
-        adminCannotCountAnotherUsersSession,
-        managerCannotCountAnotherUsersSession,
-        warehouseManagerCannotCountAnotherUsersSession,
+        adminCannotCountWithoutGrant,
+        managerCannotCountWithoutGrant,
+        warehouseManagerCannotCountWithoutGrant,
+        delegatedCounterAllowed: !!delegatedCounterAllowed.pending_sync,
         convertedBaseQuantity: saved.counted_qty,
         queueOwnerMatches: queueRows.length === 1 && queueRows[0].user_id === userId
       };
