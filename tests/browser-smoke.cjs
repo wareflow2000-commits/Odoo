@@ -602,7 +602,7 @@ const fs = require('fs');
     if (scopeFailures.length) throw new Error('Warehouse scope checks failed: ' + JSON.stringify(warehouseScopeChecks));
 
     if (errors.length) throw new Error('Browser errors:\\n' + errors.join('\\n'));
-    console.log("PASS: login desktop/mobile smoke; no browser errors; offline policy allows ISSUE and stocktake counts only; only database manager roles can count another user session offline; master-data writes are rejected and legacy master queue is quarantined; single-warehouse scope enforced; multi-warehouse offline denied; stocktake count queued locally with BOX x12 = 24 PCS and bound to its creator; refresh/fetch-failure cache preservation; conversion conflict; corrected-factor sync exactly once; foreign-user cached snapshot rejected; role SELECTED/ALL/INHERIT scopes and user-assignment intersections enforced in UI.");
+    console.log("PASS: login desktop/mobile smoke; no browser errors; creator auto-approval matches database grants, per-user flag and global setting; offline policy allows ISSUE and stocktake counts only; only database manager roles can count another user session offline; master-data writes are rejected and legacy master queue is quarantined; single-warehouse scope enforced; multi-warehouse offline denied; stocktake count queued locally with BOX x12 = 24 PCS and bound to its creator; refresh/fetch-failure cache preservation; conversion conflict; corrected-factor sync exactly once; foreign-user cached snapshot rejected; role SELECTED/ALL/INHERIT scopes and user-assignment intersections enforced in UI.");
   } catch (error) {
     fs.mkdirSync('test-results', { recursive: true });
     await page.screenshot({ path: 'test-results/failure.png', fullPage: true }).catch(() => {});
