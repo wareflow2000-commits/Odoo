@@ -444,7 +444,7 @@ const fs = require('fs');
     if (syncFailures.length) throw new Error('Stocktake sync checks failed: ' + JSON.stringify(syncChecks));
 
     const warehouseScopeChecks = await page.evaluate(async () => {
-      const { store, applyAccessFilter } = await import('/core-store.js');
+      const { store, applyAccessFilter, loadLocal } = await import('/core-store.js');
       const {
         accessibleWarehouseIds, canAccessWarehouse, canManageSystemSettings,
         canAdministerProfiles, canDatabasePermission, can, canAccessPage,
@@ -519,6 +519,34 @@ const fs = require('fs');
         && Object.values(roleContract.SUPER_ADMIN).every(Boolean)
         && nonSuperAdminRoles.every(name => Object.values(roleContract[name]).every(value => value === false))
         && warehouseManagerExplicitGrant && wildcardDoesNotBypassDatabase;
+      const cacheKey = 'orshap_wms_data_v5';
+      const originalSnapshot = localStorage.getItem(cacheKey);
+      const originalCachedPermissions = store.authorizationPermissions;
+      const originalRoleRows = store.data.role_permissions;
+      const originalScopeLoaded = store.scopeConfigLoaded;
+      const originalLoaded = store.loaded;
+      window.__session = {
+        id: 'cache-migration-user', role: 'CLERK',
+        profile: { id: 'cache-migration-user', role: 'CLERK', custom_permissions: ['action:stocktake:count'] }
+      };
+      localStorage.setItem(cacheKey, JSON.stringify({
+        __cached_user_id: 'cache-migration-user',
+        __scope_config_loaded: true,
+        role_permissions: [{ role_name: 'CLERK', permission_key: 'action:transaction:issue:create' }]
+      }));
+      const cacheLoaded = loadLocal();
+      const cachePermissionMigration = cacheLoaded
+        && store.authorizationPermissions.includes('action:transaction:issue:create')
+        && store.authorizationPermissions.includes('action:stocktake:count')
+        && Array.isArray(JSON.parse(localStorage.getItem(cacheKey) || '{}').__authorization_permissions);
+      if (originalSnapshot === null) localStorage.removeItem(cacheKey);
+      else localStorage.setItem(cacheKey, originalSnapshot);
+      store.authorizationPermissions = originalCachedPermissions;
+      store.data.role_permissions = originalRoleRows;
+      store.scopeConfigLoaded = originalScopeLoaded;
+      store.loaded = originalLoaded;
+      window.__session = originalSession;
+
       const w1 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
       const w2 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2';
       const w3 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3';
@@ -606,7 +634,7 @@ const fs = require('fs');
       const superAdminGlobalBreakGlass = store.data.warehouses.length === 3
         && accessibleWarehouseIds() === null && canAccessWarehouse(w3);
 
-      return { permissionRoleContract, selectedRole, assignmentIntersection, inheritFailsClosed, explicitAll,
+      return { permissionRoleContract, cachePermissionMigration, selectedRole, assignmentIntersection, inheritFailsClosed, explicitAll,
         userAssignmentNarrowsAll, adminInheritFailsClosed, missingScopeFailsClosed, superAdminGlobalBreakGlass };
     });
     const scopeFailures = Object.entries(warehouseScopeChecks).filter(([, value]) => value !== true);
