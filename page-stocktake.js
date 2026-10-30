@@ -32,8 +32,8 @@ import { openQrScanner } from './qr-scanner.js';
 /* ── permissions ─────────────────────────────────────────────────────────── */
 
 const canStart = () => canDatabasePermission('action:stocktake:start');
-const canCount = () => canDatabasePermission('action:stocktake:count') || canStart();
-const canSubmit = () => canDatabasePermission('action:stocktake:submit') || canStart();
+const canCount = () => canDatabasePermission('action:stocktake:count');
+const canSubmit = () => canDatabasePermission('action:stocktake:submit');
 const canApprove = () => canDatabasePermission('action:stocktake:approve');
 const canSettle = () => canDatabasePermission('action:stocktake:settle');
 const canClose = () => canDatabasePermission('action:stocktake:close');
