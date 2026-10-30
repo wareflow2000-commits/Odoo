@@ -1112,8 +1112,7 @@ function openReturn(type) {
 /* ── opening balances (manager-only atomic RPC) ────────────────────────── */
 
 function openingBalanceAllowed() {
-  return ['SUPER_ADMIN', 'MANAGER'].includes(String(role() || '').toUpperCase())
-    && canDatabasePermission('action:transaction:adjustment:create');
+  return canDatabasePermission('action:transaction:opening_balance:create');
 }
 
 function activeRows(table) {
