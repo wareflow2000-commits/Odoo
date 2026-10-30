@@ -71,17 +71,7 @@ const fs = require('fs');
       );
       const queueRows = queueKey ? JSON.parse(localStorage.getItem(queueKey)) : [];
 
-      // A shared device must not hydrate another user's cached warehouse data.
-      localStorage.setItem('orshap_wms_data_v5', JSON.stringify({
-        __cached_user_id: '77777777-7777-4777-8777-777777777777',
-        warehouses: [{ id: warehouseId, name: 'foreign cached warehouse' }],
-        stock: [{ id: 'foreign-stock' }]
-      }));
-      store.data.warehouses = [{ id: warehouseId, name: 'stale in-memory warehouse' }];
-      const foreignSnapshotRejected = loadLocal() === false
-        && store.data.warehouses.length === 0 && store.data.stock.length === 0;
-
-      return {
+      const foreignSnapshotTest = true; // Run after the refresh persistence assertions, not before them.\n\n      return {
         issueAllowed, receiptDenied, assignedWarehouseAllowed, otherWarehouseDenied,
         multiWarehouseDenied, countQueued: !!saved.pending_sync && queued,
         convertedBaseQuantity: saved.counted_qty,
@@ -115,15 +105,25 @@ const fs = require('fs');
       const pending = queueSnapshot().some(row =>
         row.source === 'stocktake' && row.status === 'PENDING'
       );
-      return {
+      const refreshChecks = {
         snapshotLoaded,
         countedQuantityRestored: line?.counted_qty === 24,
         enteredUnitRestored: line?.entered_unit === 'BOX',
         pendingCountRestored: pending
       };
+      // Now test account isolation after preserving and validating the real snapshot.
+      localStorage.setItem('orshap_wms_data_v5', JSON.stringify({
+        __cached_user_id: '77777777-7777-4777-8777-777777777777',
+        warehouses: [{ id: 'foreign-warehouse', name: 'foreign cached warehouse' }],
+        stock: [{ id: 'foreign-stock' }]
+      }));
+      store.data.warehouses = [{ id: 'foreign-warehouse', name: 'stale in-memory warehouse' }];
+      refreshChecks.foreignSnapshotRejected = loadLocal() === false
+        && store.data.warehouses.length === 0 && store.data.stock.length === 0;
+      return refreshChecks;
     });
     const refreshFailures = Object.entries(refreshChecks).filter(([, value]) => value !== true);
-    if (refreshFailures.length) throw new Error('Refresh persistence checks failed: ' + JSON.stringify(refreshChecks));
+    if (refreshFailures.length) throw new Error('Refresh/account-isolation checks failed: ' + JSON.stringify(refreshChecks));
 
     if (errors.length) throw new Error('Browser errors:\\n' + errors.join('\\n'));
     console.log('PASS: login desktop/mobile smoke; no browser errors; offline policy allows ISSUE only; single-warehouse scope enforced; multi-warehouse offline denied; stocktake count queued locally with BOX x12 = 24 PCS and bound to its creator; foreign-user cached snapshot rejected.');
