@@ -65,6 +65,7 @@ export const store = {
   legacyMasterDataNeedsRefresh: false,
   loading: false,
   error: null,
+  authorizationPermissions: [],
   listeners: new Set(),
   get(table) { return this.data[table] || (this.data[table] = []); },
   byId(table, id) { return this.get(table).find(r => r.id === id) || null; },
@@ -117,7 +118,7 @@ let persistTimer = null;
 export function persist(immediate = false) {
   const write = () => {
     try {
-      const payload = { ...store.data, __cached_user_id: currentUserId(), __scope_config_loaded: store.scopeConfigLoaded === true, __saved_at: new Date().toISOString() };
+      const payload = { ...store.data, __cached_user_id: currentUserId(), __scope_config_loaded: store.scopeConfigLoaded === true, __authorization_permissions: store.authorizationPermissions, __saved_at: new Date().toISOString() };
       localStorage.setItem(LS_KEY, JSON.stringify(payload));
       if (window.orshapSQLite?.saveState) {
         window.orshapSQLite.saveState(store.data).catch(() => {});
@@ -147,6 +148,7 @@ export function loadLocal() {
     const activeUserId = window.__session?.id || null;
     if (!activeUserId || !parsed.__cached_user_id || parsed.__cached_user_id !== activeUserId) {
       for (const t of TABLES) store.data[t] = [];
+      store.authorizationPermissions = [];
       store.noWarehouseAccess = !!activeUserId
         && !ELEVATED_ROLES.includes(String(window.__session?.role || '').toUpperCase())
         && !(Array.isArray(window.__session?.profile?.assigned_warehouse_ids)
@@ -160,6 +162,8 @@ export function loadLocal() {
       if (Array.isArray(parsed[t])) store.data[t] = parsed[t];
     }
     store.scopeConfigLoaded = parsed.__scope_config_loaded === true;
+    store.authorizationPermissions = Array.isArray(parsed.__authorization_permissions)
+      ? parsed.__authorization_permissions.filter(x => typeof x === 'string') : [];
     enrichAll();
     store.loaded = true;
     return true;
@@ -310,6 +314,17 @@ export async function pullAll({ silent = false } = {}) {
     }));
     for (const [t, list] of results) {
       if (list !== null) store.data[t] = list;
+    }
+    // UI gates consume the same effective grant catalogue as the database.
+    // This RPC returns only the signed-in user's candidate permission keys;
+    // every actual read/write remains subject to contextual DB authorization.
+    try {
+      const permissionKeys = await rpc('current_user_authorization_permissions');
+      store.authorizationPermissions = Array.isArray(permissionKeys)
+        ? permissionKeys.filter(x => typeof x === 'string') : [];
+    } catch (permissionError) {
+      store.authorizationPermissions = [];
+      console.warn('[store] effective authorization permissions unavailable; UI permissions fail closed:', permissionError?.message || permissionError);
     }
     store.scopeConfigLoaded = results.some(([t, list]) => t === 'role_warehouse_scopes' && list !== null);
     if (store.legacyMasterDataNeedsRefresh
