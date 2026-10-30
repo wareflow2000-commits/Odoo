@@ -19,6 +19,8 @@ const LS_LANG = 'orshap_lang';
 // Legacy key is read only to quarantine pending master-data edits from older releases.
 const LEGACY_MASTER_PREFIX = 'orshap_master_outbox_v1:';
 const MASTER_QUARANTINE_PREFIX = 'orshap_master_outbox_quarantine_v1:';
+const MASTER_REFRESH_REQUIRED_PREFIX = 'orshap_master_refresh_required_v1:';
+const LEGACY_MASTER_REFRESH_TABLES = new Set(['warehouses', 'zones', 'storage_areas', 'sections', 'shelves', 'items', 'item_categories', 'units', 'item_unit_conversions', 'system_settings']);
 const OUTBOX_PREFIX = 'orshap_tx_outbox_v1:';
 const STOCKTAKE_COUNT_QUEUE_PREFIX = 'orshap_stocktake_count_queue_v1:';
 
@@ -62,6 +64,7 @@ export const store = {
   lastSync: null,
   noWarehouseAccess: false,
   scopeConfigLoaded: false,
+  legacyMasterDataNeedsRefresh: false,
   loading: false,
   error: null,
   listeners: new Set(),
@@ -88,7 +91,7 @@ export function offlineTransactionTypeAllowed(type) {
 
 export function offlineWarehouseAllowed(warehouseId) {
   const session = window.__session;
-  if (!warehouseId || !session?.id) return false;
+  if (!warehouseId || !session?.id || store.legacyMasterDataNeedsRefresh) return false;
   // Resolve scope only from the active user's own profile. Never borrow another
   // cached profile's warehouse assignments just because it appears first.
   if (store.scopeConfigLoaded !== true) return false;
@@ -257,6 +260,7 @@ const REQUIRED = new Set(['warehouses', 'items', 'stock', 'transactions', 'trans
 
 export async function pullAll({ silent = false } = {}) {
   if (store.loading) return store.data;
+  quarantineLegacyMasterQueue();
   // Offline sessions (and real offline) must never hit the network: with only the
   // anon key the RLS-protected tables return empty arrays, which would wipe the
   // local cache. Read the cached snapshot instead.
@@ -264,8 +268,7 @@ export async function pullAll({ silent = false } = {}) {
   if (!navigator.onLine || offlineSession) {
     store.offline = true;
     loadLocal();
-    // The persisted cache already contains the overlay, but reapplying it keeps
-    // the local queue visible even when another tab cleared the snapshot.
+    // Reapply only the two supported offline work queues over the cached snapshot.
     applyOutboxOverlay();
     applyStocktakeCountOverlay();
     applyAccessFilter();
@@ -310,6 +313,11 @@ export async function pullAll({ silent = false } = {}) {
       if (list !== null) store.data[t] = list;
     }
     store.scopeConfigLoaded = results.some(([t, list]) => t === 'role_warehouse_scopes' && list !== null);
+    if (store.legacyMasterDataNeedsRefresh
+        && results.every(([t, list]) => !LEGACY_MASTER_REFRESH_TABLES.has(t) || list !== null)) {
+      localStorage.removeItem(MASTER_REFRESH_REQUIRED_PREFIX + currentUserId());
+      store.legacyMasterDataNeedsRefresh = false;
+    }
 
     // Optional tables that failed to read retain their prior cache; only a
     // successful query returning zero rows is allowed to replace data with [].
@@ -426,9 +434,16 @@ function quarantineLegacyMasterQueue() {
   const userId = window.__session?.id;
   if (!userId) return [];
   const legacyKey = LEGACY_MASTER_PREFIX + userId;
+  const refreshKey = MASTER_REFRESH_REQUIRED_PREFIX + userId;
   let raw;
-  try { raw = localStorage.getItem(legacyKey); } catch (_) { return readLegacyMasterQuarantine(); }
-  if (!raw) return readLegacyMasterQuarantine();
+  try { raw = localStorage.getItem(legacyKey); } catch (_) {
+    store.legacyMasterDataNeedsRefresh = true;
+    return readLegacyMasterQuarantine();
+  }
+  if (!raw) {
+    store.legacyMasterDataNeedsRefresh = localStorage.getItem(refreshKey) === '1';
+    return readLegacyMasterQuarantine();
+  }
 
   let legacy;
   try { legacy = JSON.parse(raw); } catch (_) { legacy = null; }
@@ -437,6 +452,9 @@ function quarantineLegacyMasterQueue() {
     kind: 'unreadable', raw_payload: raw
   }];
   const quarantined = readLegacyMasterQuarantine();
+  const pendingEntries = entries.filter(entry => entry?.status !== 'SYNCED');
+  if (pendingEntries.length) localStorage.setItem(refreshKey, '1');
+  store.legacyMasterDataNeedsRefresh = localStorage.getItem(refreshKey) === '1';
   const seen = new Set(quarantined.map(row => row?.operation_id).filter(Boolean));
   for (let i = 0; i < entries.length; i++) {
     const entry = entries[i];
@@ -805,6 +823,12 @@ export async function syncAll() {
     if (!liveSession?.id) throw new Error(signInOnlineMessage());
 
     quarantineLegacyMasterQueue();
+    if (store.legacyMasterDataNeedsRefresh) {
+      await pullAll({ silent: true });
+      if (store.legacyMasterDataNeedsRefresh) {
+        throw new Error('Legacy master-data changes were quarantined. A complete online refresh is required before offline ISSUE or stocktake queues can sync.');
+      }
+    }
     const transactions = await flushOutbox();
     const stocktakeCounts = await flushStocktakeCountQueue();
 
