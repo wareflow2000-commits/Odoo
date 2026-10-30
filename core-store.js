@@ -210,6 +210,11 @@ export function loadLocal() {
       store.authorizationPermissionsUserId = currentUserId();
     }
     enrichAll();
+    // The per-user stocktake outbox is the durable source for unsynchronized
+    // counts. Reapply it immediately after a verified snapshot is hydrated so
+    // a refresh cannot temporarily (or permanently) show the pre-count value.
+    // The overlay itself verifies user, session and warehouse identity.
+    applyStocktakeCountOverlay();
     store.loaded = true;
     if (!Array.isArray(parsed.__authorization_permissions)) persist(true);
     return true;
