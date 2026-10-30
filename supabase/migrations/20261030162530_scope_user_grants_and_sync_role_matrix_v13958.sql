@@ -63,7 +63,7 @@ BEGIN
 
  SELECT pg_get_functiondef('public.admin_create_authorization_grant_v2(text,text,uuid,text,text,text,uuid,uuid,text,jsonb,timestamptz,timestamptz,text)'::regprocedure) INTO d;
  anchor:='  IF p_subject_type=''USER'' AND (p_scope_type=''ALL'' OR p_warehouse_id IS NULL OR NULLIF(btrim(COALESCE(p_resource_type,'''')),'''') IS NULL) THEN' || E'\\n' ||
-         '    RAISE EXCEPTION ''User grants require a resource type, one warehouse, and OWN/WAREHOUSE/CONTEXT scope'';' || E'\\n' ||
+         '    RAISE EXCEPTION ''User grants require a resource type, one warehouse, a bounded data scope, and a future expiry'';' || E'\\n' ||
          '  END IF;';
  n:=replace(d,anchor,anchor || E'\\n' ||
    '  IF p_subject_type=''USER'' AND NOT (' || E'\\n' ||
