@@ -94,6 +94,37 @@ const fs = require('fs');
     );
     if (failedChecks.length) throw new Error('Offline store checks failed: ' + JSON.stringify(offlineChecks));
 
+    // Reload Chromium, restore the same verified offline identity, and prove
+    // that both the user's local snapshot and pending count survive a refresh.
+    await page.reload({ waitUntil: 'networkidle' });
+    const refreshChecks = await page.evaluate(async () => {
+      const { store, loadLocal, queueSnapshot } = await import('/core-store.js');
+      const userId = '11111111-1111-4111-8111-111111111111';
+      window.__session = {
+        id: userId, role: 'CLERK', offline: true,
+        profile: {
+          id: userId,
+          assigned_warehouse_ids: ['22222222-2222-4222-8222-222222222222'],
+          accessible_warehouse_ids: ['22222222-2222-4222-8222-222222222222']
+        }
+      };
+      const snapshotLoaded = loadLocal();
+      const line = store.data.stocktake_lines.find(x =>
+        x.id === '44444444-4444-4444-8444-444444444444'
+      );
+      const pending = queueSnapshot().some(row =>
+        row.source === 'stocktake' && row.status === 'PENDING'
+      );
+      return {
+        snapshotLoaded,
+        countedQuantityRestored: line?.counted_qty === 24,
+        enteredUnitRestored: line?.entered_unit === 'BOX',
+        pendingCountRestored: pending
+      };
+    });
+    const refreshFailures = Object.entries(refreshChecks).filter(([, value]) => value !== true);
+    if (refreshFailures.length) throw new Error('Refresh persistence checks failed: ' + JSON.stringify(refreshChecks));
+
     if (errors.length) throw new Error('Browser errors:\\n' + errors.join('\\n'));
     console.log('PASS: login desktop/mobile smoke; no browser errors; offline policy allows ISSUE only; single-warehouse scope enforced; multi-warehouse offline denied; stocktake count queued locally with BOX x12 = 24 PCS and bound to its creator; foreign-user cached snapshot rejected.');
   } catch (error) {
