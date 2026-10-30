@@ -484,7 +484,7 @@ function openScanCount(session, scannedLines, { onSaved } = {}) {
     return;
   }
 
-  const canSeeSystem = showSystemColumn(store.byId('stocktake_sessions', lines[0]?.session_id));
+  const canSeeSystem = showSystemColumn(session);
   const firstUncounted = lines.find(line => line.counted_qty == null) || lines[0];
   const lineOption = line => {
     const item = store.byId('items', line.item_id) || {};
