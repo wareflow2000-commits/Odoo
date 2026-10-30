@@ -337,7 +337,7 @@ function renderUsers(banned) {
       ]
     })),
     { emptyTitle: tx('لا يوجد مستخدمون', 'No users') }
-  ), `<button class="o_btn o_btn_primary o_btn_sm" onclick="OW.wms.linkUser()" ${banned ? 'disabled' : ''}>
+  ), `<button class="o_btn o_btn_primary o_btn_sm" onclick="OW.wms.linkUser()" ${canCreate ? '' : 'disabled'}>
         <i class="fa-solid fa-user-plus"></i> ${tx('ربط مستخدم', 'Link user')}</button>`, 'flush-body');
 }
 
@@ -433,6 +433,10 @@ function renderUnits(banned) {
 }
 
 function renderCategories(banned) {
+  const live = navigator.onLine && !window.__session?.offline;
+  const canCreate = can('action:item:create') && live;
+  const canUpdate = can('action:item:update') && live;
+  const canDelete = can('action:item:delete') && live;
   const cats = [...store.get('item_categories')].sort((a, b) => String(a.code || a.name).localeCompare(String(b.code || b.name)));
   const counts = new Map();
   for (const i of store.get('items')) counts.set(i.category_id, (counts.get(i.category_id) || 0) + 1);
@@ -443,10 +447,10 @@ function renderCategories(banned) {
       cells: [c.code || '—', `<span class="o_cell_main">${c.name || '—'}</span>`, c.description || '—',
         fmtNum(counts.get(c.id) || 0),
         c.is_active === false ? badge(tx('غير نشط', 'Inactive'), 'red') : badge(tx('نشط', 'Active'), 'green'),
-        banned ? '' : `<div class="o_actions_cell">
-          <button class="o_btn o_btn_ghost o_btn_sm" data-cat="${c.id}"><i class="fa-solid fa-pen"></i></button>
-          <button class="o_btn o_btn_ghost o_btn_sm" data-cat-del="${c.id}"><i class="fa-solid fa-trash"></i></button>
-        </div>`]
+        canUpdate || canDelete ? `<div class="o_actions_cell">
+          ${canUpdate ? `<button class="o_btn o_btn_ghost o_btn_sm" data-cat="${c.id}"><i class="fa-solid fa-pen"></i></button>` : ''}
+          ${canDelete ? `<button class="o_btn o_btn_ghost o_btn_sm" data-cat-del="${c.id}"><i class="fa-solid fa-trash"></i></button>` : ''}
+        </div>` : '']
     })),
     { emptyTitle: tx('لا توجد تصنيفات', 'No categories') }
   ), `<button class="o_btn o_btn_primary o_btn_sm" onclick="OW.wms.categoryModal()" ${banned ? 'disabled' : ''}>
@@ -1596,6 +1600,15 @@ async function removeConv(id) {
 
 function categoryModal(id) {
   const c = id ? store.byId('item_categories', id) : null;
+  const permission = c ? 'action:item:update' : 'action:item:create';
+  if (!can(permission)) {
+    toast(tx('ليست لديك صلاحية إدارة هذا التصنيف.', 'You do not have permission to manage this category.'), 'error');
+    return;
+  }
+  if (!navigator.onLine || window.__session?.offline) {
+    toast(tx('تعديل التصنيفات يتطلب اتصالًا مباشرًا بالخادم.', 'Category changes require a live server connection.'), 'warning');
+    return;
+  }
   modal({
     title: tx('تصنيف صنف', 'Item category'), size: 'sm',
     body: `<form id="catForm" class="o_form_grid">
@@ -1611,6 +1624,10 @@ function categoryModal(id) {
     onMount: (el, close) => {
       el.querySelector('#ctCancel').onclick = close;
       el.querySelector('#ctSave').onclick = async () => {
+        if (!can(permission) || !navigator.onLine || window.__session?.offline) {
+          toast(tx('تغيرت الصلاحيات أو انقطع الاتصال. أعد المحاولة بعد التحقق.', 'Permissions changed or the connection was lost. Reconnect and retry.'), 'warning');
+          return;
+        }
         const form = el.querySelector('#catForm');
         const d = Object.fromEntries(new FormData(form).entries());
         d.is_active = !!form.querySelector('[name="is_active"]').checked;
@@ -1624,6 +1641,14 @@ function categoryModal(id) {
 }
 
 async function removeCategory(id) {
+  if (!can('action:item:delete')) {
+    toast(tx('ليست لديك صلاحية حذف التصنيفات.', 'You do not have permission to delete categories.'), 'error');
+    return;
+  }
+  if (!navigator.onLine || window.__session?.offline) {
+    toast(tx('حذف التصنيفات يتطلب اتصالًا مباشرًا بالخادم.', 'Category deletion requires a live server connection.'), 'warning');
+    return;
+  }
   if (!await confirmDialog({ title: tx('حذف تصنيف', 'Delete category'),
     message: tx('قد تفشل العملية إذا كان التصنيف مستخدمًا.', 'This may fail if the category is in use.'),
     confirmText: tx('حذف', 'Delete'), tone: 'danger' })) return;
