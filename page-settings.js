@@ -834,7 +834,7 @@ function refreshImportMappingState(main) {
     if (text) text.textContent = missing.map(importFieldLabel).join(tx('، ', ', '));
   }
   const apply = main.querySelector('#importApply');
-  if (apply) apply.disabled = !!missing.length || F.import.busy;
+  if (apply) apply.disabled = !!missing.length || F.import.busy || !canManage() || !navigator.onLine || !!window.__session?.offline;
   const mapped = def.fields.filter(f => F.import.mapping[f.key]).length;
   const count = main.querySelector('#importMappedCount');
   if (count) count.textContent = `${mapped}/${def.fields.length}`;
