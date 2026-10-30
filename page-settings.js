@@ -319,6 +319,7 @@ function renderGeneral(banned) {
 }
 
 function renderUsers(banned) {
+  const canWrite = !banned && navigator.onLine && !window.__session?.offline;
   const users = [...store.get('profiles')].sort((a, b) => String(a.name || a.email).localeCompare(String(b.name || b.email)));
   return card('', table(
     [{ label: tx('المستخدم', 'User') }, { label: tx('البريد', 'Email') }, { label: tx('الدور', 'Role') },
@@ -333,16 +334,17 @@ function renderUsers(banned) {
         fmtNum((u.assigned_warehouse_ids || []).length),
         fmtNum((u.custom_permissions || []).length),
         `<div class="o_actions_cell">
-          ${banned ? '' : `<button class="o_btn o_btn_ghost o_btn_sm" data-user="${u.id}" title="${tx('تعديل', 'Edit')}"><i class="fa-solid fa-pen"></i></button>`}
+          ${canWrite ? `<button class="o_btn o_btn_ghost o_btn_sm" data-user="${u.id}" title="${tx('تعديل', 'Edit')}"><i class="fa-solid fa-pen"></i></button>` : ''}
         </div>`
       ]
     })),
     { emptyTitle: tx('لا يوجد مستخدمون', 'No users') }
-  ), `<button class="o_btn o_btn_primary o_btn_sm" onclick="OW.wms.linkUser()" ${banned ? 'disabled' : ''}>
+  ), `<button class="o_btn o_btn_primary o_btn_sm" onclick="OW.wms.linkUser()" ${canWrite ? '' : 'disabled'}>
         <i class="fa-solid fa-user-plus"></i> ${tx('ربط مستخدم', 'Link user')}</button>`, 'flush-body');
 }
 
 function renderRoles(banned) {
+  const canWrite = !banned && navigator.onLine && !window.__session?.offline;
   const perms = permCatalog().filter(p => {
     if (!F.permSearch) return true;
     const hay = [p.key, p.description, permissionLabel(p.key), permissionDescription(p.key, p.description)]
@@ -364,7 +366,7 @@ function renderRoles(banned) {
       <input class="o_filter_input" id="permSearch" placeholder="${tx('تصفية الصلاحيات…', 'Filter permissions…')}" value="${F.permSearch}">
       <button class="o_btn o_btn_ghost o_btn_sm" id="permAll">${tx('تحديد الكل', 'Select all')}</button>
       <button class="o_btn o_btn_ghost o_btn_sm" id="permNone">${tx('إلغاء الكل', 'Clear')}</button>
-      <button class="o_btn o_btn_primary o_btn_sm" id="permSave" ${banned ? 'disabled' : ''}>
+      <button class="o_btn o_btn_primary o_btn_sm" id="permSave" ${canWrite ? '' : 'disabled'}>
         <i class="fa-solid fa-floppy-disk"></i> ${tx('حفظ صلاحيات الدور', 'Save role permissions')}</button>
     </div>
     <div class="o_perm_groups">
@@ -372,7 +374,7 @@ function renderRoles(banned) {
         <div class="o_perm_group">
           <div class="o_perm_group_head"><b>${esc(permissionGroupLabel(g))}</b><span class="o_muted">${list.length}</span></div>
           ${list.map(p => `<label class="o_checkbox o_perm_item" title="${esc(permissionDescription(p.key, p.description))}">
-            <input type="checkbox" data-perm="${esc(p.key)}" ${active.has(p.key) ? 'checked' : ''} ${banned ? 'disabled' : ''}>
+            <input type="checkbox" data-perm="${esc(p.key)}" ${active.has(p.key) ? 'checked' : ''} ${canWrite ? '' : 'disabled'}>
             <span><b class="o_perm_label">${esc(permissionLabel(p.key))}</b><small>${esc(permissionDescription(p.key, p.description))}</small></span>
           </label>`).join('')}
         </div>`).join('')}
@@ -1334,6 +1336,10 @@ function bind(_, main) {
       toast(tx('إدارة صلاحيات الأدوار متاحة للمسؤول الأعلى فقط.', 'Only SUPER_ADMIN may administer role permissions.'), 'error');
       return;
     }
+    if (!navigator.onLine || window.__session?.offline) {
+      toast(tx('تعديل صلاحيات الأدوار يتطلب اتصالًا مباشرًا بالخادم.', 'Role permission changes require a live server connection.'), 'warning');
+      return;
+    }
     const keys = [...main.querySelectorAll('[data-perm]')].filter(c => c.checked).map(c => c.dataset.perm);
     if (!await confirmDialog({
       title: tx('حفظ صلاحيات الدور', 'Save role permissions'),
@@ -1402,6 +1408,10 @@ function userModal(id) {
     toast(tx('إدارة ملفات المستخدمين متاحة للمسؤول الأعلى فقط.', 'Only SUPER_ADMIN may administer user profiles.'), 'error');
     return;
   }
+  if (!navigator.onLine || window.__session?.offline) {
+    toast(tx('إدارة ملفات المستخدمين تتطلب اتصالًا مباشرًا بالخادم.', 'Profile administration requires a live server connection.'), 'warning');
+    return;
+  }
   const u = store.byId('profiles', id);
   if (!u) return;
   const assigned = new Set(u.assigned_warehouse_ids || []);
@@ -1431,6 +1441,10 @@ function userModal(id) {
     onMount: (el, close) => {
       el.querySelector('#uCancel').onclick = close;
       el.querySelector('#uSave').onclick = async () => {
+        if (!canAdministerProfiles() || !navigator.onLine || window.__session?.offline) {
+          toast(tx('الصلاحية أو الاتصال غير متاح. أعد المحاولة بعد التحقق.', 'Permission or connection unavailable. Reconnect and retry.'), 'warning');
+          return;
+        }
         const form = el.querySelector('#userForm');
         const d = Object.fromEntries(new FormData(form).entries());
         const warehouseIds = [...form.querySelectorAll('[name="wh"]:checked')].map(c => c.value);
@@ -1456,6 +1470,10 @@ function linkUserModal() {
     toast(tx('ربط المستخدمين متاح للمسؤول الأعلى فقط.', 'Only SUPER_ADMIN may link user profiles.'), 'error');
     return;
   }
+  if (!navigator.onLine || window.__session?.offline) {
+    toast(tx('ربط المستخدمين يتطلب اتصالًا مباشرًا بالخادم.', 'Linking profiles requires a live server connection.'), 'warning');
+    return;
+  }
   const body = `<form id="linkForm" class="o_form_grid">
       ${input({ name: 'email', label: tx('البريد الإلكتروني', 'Email'), type: 'email', required: true })}
       ${input({ name: 'name', label: tx('الاسم', 'Name'), required: true })}
@@ -1472,6 +1490,10 @@ function linkUserModal() {
     onMount: (el, close) => {
       el.querySelector('#luCancel').onclick = close;
       el.querySelector('#luSave').onclick = async () => {
+        if (!canAdministerProfiles() || !navigator.onLine || window.__session?.offline) {
+          toast(tx('الصلاحية أو الاتصال غير متاح. أعد المحاولة بعد التحقق.', 'Permission or connection unavailable. Reconnect and retry.'), 'warning');
+          return;
+        }
         const d = Object.fromEntries(new FormData(el.querySelector('#linkForm')).entries());
         try {
           await adminLinkProfile({ email: d.email, name: d.name, role: d.role, status: d.status, warehouseIds: [] });
