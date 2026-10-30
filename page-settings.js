@@ -268,7 +268,9 @@ function render() {
     ${F.tab === 'general' ? `${!canManageSystemSettings() ? alertBox(tx('تعديل أعلام النظام متاح للمسؤول الأعلى أو المدير فقط.', 'System flags are editable by SUPER_ADMIN / MANAGER only.'), 'warning') : ''}${renderGeneral(banned || !canManageSystemSettings())}`
       : F.tab === 'users' ? `${!canAdministerProfiles() ? alertBox(tx('إدارة ملفات المستخدمين متاحة للمسؤول الأعلى فقط.', 'Profile administration is restricted to SUPER_ADMIN. Database authorization remains authoritative.'), 'warning') : ''}${renderUsers(banned || !canAdministerProfiles())}`
       : F.tab === 'roles' ? `${!canAdministerProfiles() ? alertBox(tx('إدارة صلاحيات الأدوار متاحة للمسؤول الأعلى فقط.', 'Role-permission administration is restricted to SUPER_ADMIN.'), 'warning') : ''}${renderRoles(banned || !canAdministerProfiles())}`
-      : F.tab === 'authorization' ? `${!canAdministerProfiles() ? alertBox(tx('إدارة التفويض المتقدم متاحة للمسؤول الأعلى فقط.', 'Advanced authorization administration is restricted to SUPER_ADMIN.'), 'warning') : ''}${renderAuthorization(banned || !canAdministerProfiles())}`
+      : F.tab === 'authorization' ? (canAdministerProfiles()
+        ? renderAuthorization(banned)
+        : alertBox(tx('إدارة التفويض المتقدم متاحة للمسؤول الأعلى فقط.', 'Advanced authorization administration is restricted to SUPER_ADMIN.'), 'warning'))
       : F.tab === 'units' ? `${!canManageSystemSettings() ? alertBox(tx('إدارة الوحدات والتحويلات متاحة للمسؤول الأعلى أو المدير فقط.', 'Unit and conversion administration is restricted to SUPER_ADMIN / MANAGER.'), 'warning') : ''}${renderUnits(banned || !canManageSystemSettings())}`
       : F.tab === 'categories' ? renderCategories()
       : F.tab === 'import' ? renderImport(banned)
@@ -1516,7 +1518,7 @@ function bind(_, main) {
     }).finally(() => {
       F.authorizationLoading = false;
       F.authorizationLoaded = true;
-      reload();
+      if (F.tab === 'authorization') reload();
     });
   }
 }
