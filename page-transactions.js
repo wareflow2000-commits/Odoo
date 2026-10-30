@@ -613,8 +613,8 @@ function collectDraft(root, lines) {
   if (!canCreateType(type)) errors.push(tx('لا تملك صلاحية إنشاء هذا النوع من السندات.', 'You do not have permission to create this voucher type.'));
   if (!navigator.onLine || provisional) {
     if (!offlineTransactionTypeAllowed(type)) {
-      errors.push(tx('دون اتصال: يُسمح بالتوريد والصرف فقط. تحتاج التسويات إلى اتصال مباشر.',
-        'Offline mode supports receipts and issues only. Adjustments require a live connection.'));
+      errors.push(tx('دون اتصال: يُسمح بالصرف فقط، وعدّ الجرد عبر مساره المخصص. تتطلب بقية المعاملات اتصالاً مباشراً.',
+        'Offline mode supports issues only; stocktake counts use their dedicated queue. All other transactions require a live connection.'));
     }
     if (!offlineWarehouseAllowed(warehouseId)) {
       errors.push(tx('دون اتصال: يلزم مستودع واحد معيّن صراحةً لحسابك.',
