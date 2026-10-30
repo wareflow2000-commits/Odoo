@@ -103,20 +103,6 @@ export function offlineWarehouseAllowed(warehouseId) {
     : (cachedProfile || {});
   const assigned = [...new Set((profile.assigned_warehouse_ids || []).filter(Boolean))];
   if (assigned.length !== 1 || assigned[0] !== warehouseId) return false;
-  if (store.scopeConfigLoaded !== true) {
-    store.noWarehouseAccess = true;
-    for (const t of [
-      'warehouses', 'zones', 'storage_areas', 'warehouse_storage_areas',
-      'sections', 'shelves', 'stock', 'transactions', 'transaction_lines',
-      'stocktake_sessions', 'stocktake_lines', 'stocktake_logs',
-      'stock_transfers', 'stock_transfer_orders', 'inventory_ledger',
-      'transaction_ledger', 'transaction_audit', 'audit_logs',
-      'archive_movements', 'archive_balances', 'sync_log'
-    ]) store.data[t] = [];
-    enrichAll();
-    return;
-  }
-
   const roleScope = store.get('role_warehouse_scopes').find(row =>
     String(row.role_name || '').toUpperCase() === String(session.role || '').toUpperCase()
   ) || profile.role_warehouse_scope || null;
@@ -363,6 +349,20 @@ export async function pullAll({ silent = false } = {}) {
 export function applyAccessFilter() {
   const user = window.__session;
   if (!user?.id) return;
+
+  if (store.scopeConfigLoaded !== true) {
+    store.noWarehouseAccess = true;
+    for (const t of [
+      'warehouses', 'zones', 'storage_areas', 'warehouse_storage_areas',
+      'sections', 'shelves', 'stock', 'transactions', 'transaction_lines',
+      'stocktake_sessions', 'stocktake_lines', 'stocktake_logs',
+      'stock_transfers', 'stock_transfer_orders', 'inventory_ledger',
+      'transaction_ledger', 'transaction_audit', 'audit_logs',
+      'archive_movements', 'archive_balances', 'sync_log'
+    ]) store.data[t] = [];
+    enrichAll();
+    return;
+  }
 
   const roleName = String(user.role || user.profile?.role || '').toUpperCase();
   const assigned = Array.isArray(user.profile?.assigned_warehouse_ids)
