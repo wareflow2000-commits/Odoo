@@ -105,7 +105,7 @@ export function canApproveTransactions() {
 export function canCreateTransactionType(type) {
   const t = String(type || '').toUpperCase();
   if (t === 'OPENING_BALANCE') {
-    return canDatabasePermission('action:transaction:adjustment:create');
+    return canDatabasePermission('action:transaction:opening_balance:create');
   }
   if (t === 'GRN' || t === 'RETURN_FROM_USAGE' || t === 'RETURN_FROM_CUSTOMER') {
     return canDatabasePermission('action:transaction:grn:create');
