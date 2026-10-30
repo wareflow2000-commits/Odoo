@@ -42,7 +42,12 @@ const F = {
   },
   backup: {
     busy: false, fileName: '', fileSize: 0, snapshot: null, summary: null
-  }
+  },
+  authorizationGrants: [],
+  authorizationDecisions: [],
+  authorizationLoaded: false,
+  authorizationLoading: false,
+  authorizationError: ''
 };
 
 const LIVE_BACKUP_META = 'orshap_live_backup_meta_v1';
@@ -254,6 +259,7 @@ function render() {
       { value: 'general', label: tx('عام', 'General') },
       { value: 'users', label: tx('المستخدمون', 'Users'), count: store.get('profiles').length },
       { value: 'roles', label: tx('مصفوفة الصلاحيات', 'Permission matrix'), count: store.get('role_permissions').length },
+      { value: 'authorization', label: tx('التفويض المتقدم', 'Advanced authorization'), count: F.authorizationGrants.filter(g => !g.revoked_at).length },
       { value: 'units', label: tx('الوحدات والتحويلات', 'Units & conversions'), count: store.get('units').length },
       { value: 'categories', label: tx('تصنيفات الأصناف', 'Item categories'), count: store.get('item_categories').length },
       { value: 'import', label: tx('استيراد البيانات', 'Data import') },
@@ -262,6 +268,7 @@ function render() {
     ${F.tab === 'general' ? `${!canManageSystemSettings() ? alertBox(tx('تعديل أعلام النظام متاح للمسؤول الأعلى أو المدير فقط.', 'System flags are editable by SUPER_ADMIN / MANAGER only.'), 'warning') : ''}${renderGeneral(banned || !canManageSystemSettings())}`
       : F.tab === 'users' ? `${!canAdministerProfiles() ? alertBox(tx('إدارة ملفات المستخدمين متاحة للمسؤول الأعلى فقط.', 'Profile administration is restricted to SUPER_ADMIN. Database authorization remains authoritative.'), 'warning') : ''}${renderUsers(banned || !canAdministerProfiles())}`
       : F.tab === 'roles' ? `${!canAdministerProfiles() ? alertBox(tx('إدارة صلاحيات الأدوار متاحة للمسؤول الأعلى فقط.', 'Role-permission administration is restricted to SUPER_ADMIN.'), 'warning') : ''}${renderRoles(banned || !canAdministerProfiles())}`
+      : F.tab === 'authorization' ? `${!canAdministerProfiles() ? alertBox(tx('إدارة التفويض المتقدم متاحة للمسؤول الأعلى فقط.', 'Advanced authorization administration is restricted to SUPER_ADMIN.'), 'warning') : ''}${renderAuthorization(banned || !canAdministerProfiles())}`
       : F.tab === 'units' ? `${!canManageSystemSettings() ? alertBox(tx('إدارة الوحدات والتحويلات متاحة للمسؤول الأعلى أو المدير فقط.', 'Unit and conversion administration is restricted to SUPER_ADMIN / MANAGER.'), 'warning') : ''}${renderUnits(banned || !canManageSystemSettings())}`
       : F.tab === 'categories' ? renderCategories()
       : F.tab === 'import' ? renderImport(banned)
@@ -378,6 +385,88 @@ function renderRoles(banned) {
             <span><b class="o_perm_label">${esc(permissionLabel(p.key))}</b><small>${esc(permissionDescription(p.key, p.description))}</small></span>
           </label>`).join('')}
         </div>`).join('')}
+    </div>`;
+}
+
+function renderAuthorization(banned) {
+  const canWrite = !banned && canAdministerProfiles() && navigator.onLine && !window.__session?.offline;
+  if (F.authorizationLoading || (!F.authorizationLoaded && !F.authorizationError)) {
+    return card(tx('محرك التفويض المؤسسي', 'Institutional authorization engine'),
+      `<div class="o_empty"><i class="fa-solid fa-circle-notch fa-spin"></i><p>${tx('جارٍ تحميل سياسات التفويض وسجل القرارات…', 'Loading grants and authorization decisions…')}</p></div>`);
+  }
+  if (F.authorizationError) {
+    return card(tx('محرك التفويض المؤسسي', 'Institutional authorization engine'),
+      alertBox(esc(F.authorizationError), 'warning'),
+      `<button class="o_btn o_btn_secondary o_btn_sm" id="authReload">${tx('إعادة المحاولة', 'Retry')}</button>`);
+  }
+  const grants = F.authorizationGrants || [];
+  const decisions = F.authorizationDecisions || [];
+  const warehouseName = id => {
+    if (!id) return '—';
+    const w = store.byId('warehouses', id);
+    return w ? `${w.code || ''} — ${w.name || ''}` : String(id).slice(0, 8);
+  };
+  const actorName = id => {
+    if (!id) return '—';
+    const p = store.byId('profiles', id);
+    return p?.name || p?.email || String(id).slice(0, 8);
+  };
+  return `
+    <div class="o_stack">
+      ${card(`<i class="fa-solid fa-shield-halved"></i> ${tx('منح التفويض', 'Authorization grants')}`,
+        `<p class="o_hint">${tx('تتحكم المنحة في الإجراء والمورد والسجل والمستودع ونطاق الملكية أو شروط السياق ومدة الصلاحية. المنع الصريح يتغلب على السماح.', 'Each grant can constrain action, resource, record, warehouse, ownership/context conditions and validity. Explicit deny always overrides allow.')}</p>
+        ${table(
+          [
+            { label: tx('المستفيد', 'Subject') },
+            { label: tx('الإجراء', 'Action') },
+            { label: tx('المورد / السجل', 'Resource / record') },
+            { label: tx('المستودع', 'Warehouse') },
+            { label: tx('الأثر', 'Effect') },
+            { label: tx('النطاق', 'Scope') },
+            { label: tx('الصلاحية حتى', 'Valid until') },
+            { label: tx('الحالة', 'Status') },
+            { label: '', width: '76px' }
+          ],
+          grants.map(g => ({
+            cells: [
+              g.subject_type === 'ROLE' ? roleLabel(g.role_name) : actorName(g.user_id),
+              `<span class="o_cell_main">${esc(permissionLabel(g.permission_key))}</span><div class="o_cell_sub">${esc(g.permission_key)}</div>`,
+              `${esc(g.resource_type || '—')}${g.resource_id ? `<div class="o_cell_sub">${esc(g.resource_id)}</div>` : ''}`,
+              esc(warehouseName(g.warehouse_id)),
+              badge(g.effect, g.effect === 'DENY' ? 'red' : 'green'),
+              `${esc(g.scope_type)}${g.scope_type === 'CONTEXT' ? `<div class="o_cell_sub">${esc(JSON.stringify(g.conditions || {}))}</div>` : ''}`,
+              g.valid_until ? fmtDateTime(g.valid_until) : '—',
+              g.revoked_at ? badge(tx('ملغاة', 'Revoked'), 'red') : (new Date(g.valid_from) > new Date() ? badge(tx('مجدولة', 'Scheduled'), 'blue') : badge(tx('فعالة', 'Active'), 'green')),
+              !canWrite || g.revoked_at ? '' : `<button class="o_btn o_btn_ghost o_btn_sm" data-auth-revoke="${g.id}" title="${tx('إلغاء المنحة', 'Revoke grant')}" aria-label="${tx('إلغاء المنحة', 'Revoke grant')}"><i class="fa-solid fa-ban"></i></button>`
+            ]
+          })),
+          { emptyTitle: tx('لا توجد منح تفويض', 'No authorization grants') }
+        )}`,
+        `<button class="o_btn o_btn_primary o_btn_sm" id="authGrantAdd" ${canWrite ? '' : 'disabled'}><i class="fa-solid fa-plus"></i> ${tx('منحة جديدة', 'New grant')}</button>`, 'flush-body')}
+      ${card(`<i class="fa-solid fa-clipboard-list"></i> ${tx('سجل قرارات التفويض — آخر 30 يوماً', 'Authorization decisions — last 30 days')}`,
+        table(
+          [
+            { label: tx('التاريخ', 'Date') },
+            { label: tx('المستخدم', 'Actor') },
+            { label: tx('الإجراء', 'Action') },
+            { label: tx('المورد / السجل', 'Resource / record') },
+            { label: tx('المستودع', 'Warehouse') },
+            { label: tx('القرار', 'Decision') },
+            { label: tx('السبب', 'Reason') }
+          ],
+          decisions.map(d => ({
+            cells: [
+              fmtDateTime(d.created_at),
+              esc(actorName(d.actor_user_id)),
+              `<span class="o_cell_main">${esc(d.action_key)}</span>${d.break_glass ? `<div class="o_cell_sub">${badge(tx('تجاوز طارئ', 'Break-glass'), 'purple')}</div>` : ''}`,
+              `${esc(d.resource_type || '—')}${d.resource_id ? `<div class="o_cell_sub">${esc(d.resource_id)}</div>` : ''}`,
+              esc(warehouseName(d.warehouse_id)),
+              badge(d.decision, d.decision === 'DENY' ? 'red' : 'green'),
+              esc(d.decision_reason || '—')
+            ]
+          })),
+          { emptyTitle: tx('لا توجد قرارات مسجلة في الفترة المحددة', 'No decisions recorded in this period') }
+        ), '', 'flush-body')}
     </div>`;
 }
 
@@ -1399,9 +1488,159 @@ function bind(_, main) {
 
   const importUpdate = main.querySelector('#importUpdateExisting');
   if (importUpdate) importUpdate.onchange = () => { F.import.updateExisting = importUpdate.checked; };
+
+  const authReload = main.querySelector('#authReload');
+  if (authReload) authReload.onclick = () => { F.authorizationLoaded = false; F.authorizationError = ''; reload(); };
+  const authGrantAdd = main.querySelector('#authGrantAdd');
+  if (authGrantAdd) authGrantAdd.onclick = authorizationGrantModal;
+  main.querySelectorAll('[data-auth-revoke]').forEach(button => {
+    button.onclick = () => revokeAuthorizationGrant(button.dataset.authRevoke);
+  });
+
+  if (F.tab === 'authorization' && canAdministerProfiles() && !F.authorizationLoaded && !F.authorizationLoading) {
+    F.authorizationLoading = true;
+    Promise.all([
+      rpc('admin_list_authorization_grants', {
+        p_subject_type: null, p_role_name: null, p_user_id: null, p_active_only: false, p_limit: 500
+      }),
+      rpc('admin_list_authorization_decisions', {
+        p_since: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+        p_actor_user_id: null, p_limit: 250
+      })
+    ]).then(([grants, decisions]) => {
+      F.authorizationGrants = Array.isArray(grants) ? grants : [];
+      F.authorizationDecisions = Array.isArray(decisions) ? decisions : [];
+      F.authorizationError = '';
+    }).catch(error => {
+      F.authorizationError = String(error?.message || error);
+    }).finally(() => {
+      F.authorizationLoading = false;
+      F.authorizationLoaded = true;
+      reload();
+    });
+  }
 }
 
 /* ── user editing ────────────────────────────────────────────────────────── */
+
+function authorizationGrantModal() {
+  if (!canAdministerProfiles() || !navigator.onLine || window.__session?.offline) {
+    toast(tx('إدارة التفويض تتطلب صلاحية المسؤول الأعلى واتصالاً مباشراً.', 'Grant administration requires SUPER_ADMIN and a live connection.'), 'warning');
+    return;
+  }
+  const users = store.get('profiles').filter(p => p.status === 'ACTIVE');
+  const permissions = permCatalog();
+  const warehouses = store.get('warehouses');
+  const body = `<form id="authorizationGrantForm" class="o_form_grid">
+    <div class="o_field"><label>${tx('نوع المستفيد', 'Subject type')}</label>
+      <select name="subject_type" id="authSubjectType"><option value="USER">${tx('مستخدم', 'User')}</option><option value="ROLE">${tx('دور', 'Role')}</option></select></div>
+    <div class="o_field" id="authUserWrap"><label>${tx('المستخدم', 'User')}</label>
+      <select name="user_id">${users.map(u => `<option value="${esc(u.id)}">${esc(u.name || u.email || u.id)} — ${esc(roleLabel(u.role))}</option>`).join('')}</select></div>
+    <div class="o_field" id="authRoleWrap" style="display:none"><label>${tx('الدور', 'Role')}</label>
+      <select name="role_name">${ROLES.filter(r => r !== 'SUPER_ADMIN').map(r => `<option value="${r}">${esc(roleLabel(r))}</option>`).join('')}</select></div>
+    <div class="o_field full"><label>${tx('الصلاحية', 'Permission')}</label>
+      <select name="permission_key" required>${permissions.map(p => `<option value="${esc(p.key)}">${esc(permissionLabel(p.key))} — ${esc(p.key)}</option>`).join('')}</select></div>
+    <div class="o_field"><label>${tx('الأثر', 'Effect')}</label>
+      <select name="effect"><option value="ALLOW">${tx('سماح', 'Allow')}</option><option value="DENY">${tx('منع', 'Deny')}</option></select></div>
+    <div class="o_field"><label>${tx('نوع المورد', 'Resource type')}</label><input name="resource_type" placeholder="transactions / stocktake_sessions"></div>
+    <div class="o_field"><label>${tx('معرّف السجل (اختياري)', 'Resource record ID (optional)')}</label><input name="resource_id" placeholder="UUID"></div>
+    <div class="o_field"><label>${tx('المستودع', 'Warehouse')}</label>
+      <select name="warehouse_id"><option value="">— ${tx('كل المستودعات ضمن نطاق المستخدم', 'All warehouses within user scope')} —</option>${warehouses.map(w => `<option value="${esc(w.id)}">${esc(w.code || '')} — ${esc(w.name || '')}</option>`).join('')}</select></div>
+    <div class="o_field"><label>${tx('نطاق البيانات', 'Data scope')}</label>
+      <select name="scope_type" id="authScopeType">
+        <option value="ALL">ALL</option><option value="OWN">OWN</option><option value="WAREHOUSE">WAREHOUSE</option><option value="CONTEXT">CONTEXT</option>
+      </select></div>
+    <div class="o_field full"><label>${tx('شروط السياق JSON (لنطاق CONTEXT)', 'Context conditions JSON (for CONTEXT scope)')}</label>
+      <textarea name="conditions" rows="3" placeholder='{"status":"PENDING_APPROVAL"}'></textarea></div>
+    <div class="o_field"><label>${tx('تنتهي في (اختياري)', 'Expires at (optional)')}</label><input type="datetime-local" name="valid_until"></div>
+    <div class="o_field full"><label>${tx('سبب منح التفويض', 'Grant reason')}</label><textarea name="reason" required rows="2"></textarea></div>
+  </form>`;
+  modal({
+    title: `<i class="fa-solid fa-shield-halved"></i> ${tx('إنشاء منحة تفويض', 'Create authorization grant')}`,
+    size: 'lg', body,
+    footer: `<button class="o_btn o_btn_secondary" id="authGrantCancel">${tx('إلغاء', 'Cancel')}</button>
+      <button class="o_btn o_btn_primary" id="authGrantSave">${tx('حفظ المنحة', 'Save grant')}</button>`,
+    onMount: (el, close) => {
+      const form = el.querySelector('#authorizationGrantForm');
+      const subjectType = form.querySelector('#authSubjectType');
+      const syncSubject = () => {
+        form.querySelector('#authUserWrap').style.display = subjectType.value === 'USER' ? '' : 'none';
+        form.querySelector('#authRoleWrap').style.display = subjectType.value === 'ROLE' ? '' : 'none';
+      };
+      subjectType.onchange = syncSubject;
+      syncSubject();
+      el.querySelector('#authGrantCancel').onclick = close;
+      el.querySelector('#authGrantSave').onclick = async () => {
+        const data = Object.fromEntries(new FormData(form).entries());
+        if (!data.reason.trim()) {
+          toast(tx('سبب المنح مطلوب.', 'A grant reason is required.'), 'warning');
+          return;
+        }
+        let conditions = {};
+        try {
+          if (data.conditions.trim()) conditions = JSON.parse(data.conditions);
+          if (!conditions || Array.isArray(conditions) || typeof conditions !== 'object') throw new Error('JSON must be an object');
+        } catch (error) {
+          toast(tx('شروط السياق يجب أن تكون كائن JSON صالحاً.', 'Context conditions must be a valid JSON object.'), 'error');
+          return;
+        }
+        const resourceId = data.resource_id.trim() || null;
+        if (resourceId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(resourceId)) {
+          toast(tx('معرّف السجل ليس UUID صالحاً.', 'Resource record ID is not a valid UUID.'), 'error');
+          return;
+        }
+        const save = el.querySelector('#authGrantSave');
+        save.disabled = true;
+        try {
+          await rpc('admin_create_authorization_grant_v2', {
+            p_subject_type: data.subject_type,
+            p_role_name: data.subject_type === 'ROLE' ? data.role_name : null,
+            p_user_id: data.subject_type === 'USER' ? data.user_id : null,
+            p_permission_key: data.permission_key,
+            p_effect: data.effect,
+            p_resource_type: data.resource_type.trim() || null,
+            p_resource_id: resourceId,
+            p_warehouse_id: data.warehouse_id || null,
+            p_scope_type: data.scope_type,
+            p_conditions: conditions,
+            p_valid_from: new Date().toISOString(),
+            p_valid_until: data.valid_until ? new Date(data.valid_until).toISOString() : null,
+            p_reason: data.reason.trim()
+          });
+          close();
+          F.authorizationLoaded = false;
+          toast(tx('تم إنشاء منحة التفويض وتسجيلها في سجل التدقيق.', 'Authorization grant created and audited.'), 'success');
+          reload();
+        } catch (error) {
+          toast(String(error?.message || error), 'error');
+        } finally { save.disabled = false; }
+      };
+    }
+  });
+}
+
+async function revokeAuthorizationGrant(id) {
+  if (!canAdministerProfiles() || !navigator.onLine || window.__session?.offline) return;
+  const reason = await promptDialog({
+    title: tx('إلغاء منحة التفويض', 'Revoke authorization grant'),
+    label: tx('اكتب سبب إلغاء المنحة. سيُحفظ السبب في سجل التدقيق.', 'Enter the reason for revoking this grant. The reason is written to the audit log.'),
+    placeholder: tx('سبب الإلغاء', 'Revocation reason'),
+    confirmText: tx('إلغاء المنحة', 'Revoke grant')
+  });
+  if (reason === null) return;
+  if (!reason.trim()) {
+    toast(tx('سبب الإلغاء مطلوب.', 'A revocation reason is required.'), 'warning');
+    return;
+  }
+  try {
+    await rpc('admin_revoke_authorization_grant', { p_grant_id: id, p_reason: reason.trim() });
+    F.authorizationLoaded = false;
+    toast(tx('تم إلغاء المنحة وتسجيل القرار.', 'Grant revoked and audited.'), 'success');
+    reload();
+  } catch (error) {
+    toast(String(error?.message || error), 'error');
+  }
+}
 
 function userModal(id) {
   if (!canAdministerProfiles()) {
@@ -1901,12 +2140,13 @@ function forgetOfflineLogin() {
 /* ── globals ─────────────────────────────────────────────────────────────── */
 
 OW.wms = OW.wms || {};
-OW.wms.settingsTab = v => { F.tab = v; reload(); };
+OW.wms.settingsTab = v => { F.tab = v; if (v === 'authorization') { F.authorizationLoaded = false; F.authorizationError = ''; } reload(); };
 OW.wms.reloadSettings = async () => {
   try { await pullAll(); } catch (e) { toast(String(e.message || e), 'error'); }
   reload();
 };
 OW.wms.userModal = userModal;
+OW.wms.authorizationGrantModal = authorizationGrantModal;
 OW.wms.linkUser = linkUserModal;
 OW.wms.unitModal = unitModal;
 OW.wms.convModal = convModal;
