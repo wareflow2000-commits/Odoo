@@ -1,4 +1,7 @@
 -- User-specific grants must not survive promotion to SUPER_ADMIN.
+-- Retire the legacy unscoped v1 grant RPC; the client uses the scoped v2 endpoint.
+REVOKE ALL ON FUNCTION public.admin_create_authorization_grant(text,text,uuid,text,text,text,uuid,text,jsonb,timestamptz,timestamptz,text)
+FROM PUBLIC, anon, authenticated;
 -- Serialize grant creation against profile promotion to close the check/write race.
 CREATE OR REPLACE FUNCTION public.revoke_user_authorization_grants_on_superadmin_promotion()
 RETURNS trigger
@@ -108,6 +111,14 @@ BEGIN
      OR position('UPDATE OF role' IN v_trigger_definition) = 0
      OR position('SUPER_ADMIN' IN v_trigger_definition) = 0 THEN
     RAISE EXCEPTION 'SUPER_ADMIN promotion grant-revocation trigger verification failed';
+  END IF;
+
+  IF has_function_privilege(
+       'authenticated',
+       'public.admin_create_authorization_grant(text,text,uuid,text,text,text,uuid,text,jsonb,timestamptz,timestamptz,text)'::regprocedure,
+       'EXECUTE'
+     ) THEN
+    RAISE EXCEPTION 'Legacy unscoped authorization grant RPC remains executable by authenticated';
   END IF;
 
   IF EXISTS (
