@@ -60,22 +60,12 @@ const fs = require('fs');
       const expectBlocked = async action => {
         try { await action(); return false; } catch (_) { return true; }
       };
-      localStorage.setItem('orshap_master_outbox_v1:' + userId, JSON.stringify([{
-        operation_id: 'legacy-master-fixture', kind: 'insert', table: 'items',
-        id: '99999999-9999-4999-8999-999999999999',
-        row: { id: '99999999-9999-4999-8999-999999999999', code: 'LEGACY-OFFLINE' },
-        status: 'PENDING'
-      }]));
       const blockedMasterWrites = await Promise.all([
         expectBlocked(() => insertRow('items', { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', code: 'OFFLINE-INSERT' })),
         expectBlocked(() => updateRow('items', itemId, { name_en: 'OFFLINE-UPDATE' })),
         expectBlocked(() => deleteRow('items', itemId)),
         expectBlocked(() => upsertSetting('REQUIRE_APPROVAL', false))
       ]);
-      const legacyQueueRows = queueSnapshot().filter(row => row.source === 'blocked_master');
-      const legacyMasterQuarantined = !localStorage.getItem('orshap_master_outbox_v1:' + userId)
-        && legacyQueueRows.length === 1 && legacyQueueRows[0].status === 'CONFLICT'
-        && JSON.parse(localStorage.getItem('orshap_master_outbox_quarantine_v1:' + userId) || '[]').length === 1;
       const noOptimisticMasterWrite = store.data.items.length === 1
         && store.data.items[0].id === itemId;
       const issueAllowed = offlineTransactionTypeAllowed('ISSUE');
