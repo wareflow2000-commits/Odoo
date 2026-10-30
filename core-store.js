@@ -193,6 +193,8 @@ export function loadLocal() {
       for (const t of TABLES) store.data[t] = [];
       store.authorizationPermissions = [];
       store.authorizationPermissionsUserId = null;
+      store.authorizationGrantRows = [];
+      store.authorizationGrantRowsUserId = null;
       store.scopeConfigLoaded = false;
       store.noWarehouseAccess = !!window.__session?.id
         && !ELEVATED_ROLES.includes(String(window.__session?.role || '').toUpperCase())
@@ -260,6 +262,8 @@ export function loadLocal() {
     for (const t of TABLES) store.data[t] = [];
     store.authorizationPermissions = [];
     store.authorizationPermissionsUserId = null;
+    store.authorizationGrantRows = [];
+    store.authorizationGrantRowsUserId = null;
     store.scopeConfigLoaded = false;
     store.loaded = false;
     store.noWarehouseAccess = !!window.__session?.id
