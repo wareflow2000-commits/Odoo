@@ -15,12 +15,12 @@ DECLARE
   d text;
   n text;
   old_block text := $old$
-INSERT INTO public.authorization_decisions
+  INSERT INTO public.authorization_decisions
    (actor_user_id,action_key,resource_type,resource_id,warehouse_id,decision,decision_reason,matched_grant_id,break_glass,context)
   VALUES (v_user_id,p_action_key,p_resource_type,p_resource_id,p_warehouse_id,v_decision,v_reason,COALESCE(v_deny_id,v_allow_id),v_break_glass,v_context);
 $old$;
   new_block text := $new$
-INSERT INTO public.authorization_decisions
+  INSERT INTO public.authorization_decisions
    (transaction_id,decision_fingerprint,actor_user_id,action_key,resource_type,resource_id,warehouse_id,decision,decision_reason,matched_grant_id,break_glass,context)
   VALUES (
     txid_current(),
