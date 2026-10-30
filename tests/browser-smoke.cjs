@@ -292,23 +292,31 @@ const fs = require('fs');
 
     // Auto-approval UI pre-check must defer to the server's explicit grant engine.
     const autoApprovalChecks = await page.evaluate(async () => {
-      const { shouldAutoApprove } = await import('/core-store.js');
+      const { shouldAutoApprove, store } = await import('/core-store.js');
       const originalSession = window.__session;
-      const originalClient = window.orshapSupabaseReady;
+      const originalGrantRows = store.authorizationGrantRows;
+      const originalGrantRowsUserId = store.authorizationGrantRowsUserId;
       const userId = '99999999-9999-4999-8999-999999999999';
+      const warehouseId = '88888888-8888-4888-8888-888888888888';
       const issue = 'action:transaction:issue:create';
       const auto = 'action:transaction:auto_approve';
       const evaluate = async ({ role, profile = {}, grants = [] }) => {
-        const grantSet = new Set(grants);
+        store.authorizationGrantRows = grants.map((permission_key, index) => ({
+          id: 'auto-approval-grant-' + index,
+          subject_type: 'USER',
+          permission_key,
+          effect: 'ALLOW',
+          resource_type: 'transaction',
+          resource_id: null,
+          warehouse_id: warehouseId,
+          scope_type: 'WAREHOUSE',
+          conditions: {},
+          valid_from: new Date(Date.now() - 60000).toISOString(),
+          valid_until: null
+        }));
+        store.authorizationGrantRowsUserId = userId;
         window.__session = { id: userId, role, profile: { id: userId, ...profile } };
-        window.orshapSupabaseReady = Promise.resolve({
-          async rpc(name, args) {
-            if (name !== 'current_user_has_permission') return { data: null, error: { message: 'unexpected RPC' } };
-            const allowed = role === 'SUPER_ADMIN' || grantSet.has(args.p_permission);
-            return { data: allowed, error: null };
-          }
-        });
-        return await shouldAutoApprove('ISSUE');
+        return await shouldAutoApprove('ISSUE', warehouseId, '77777777-7777-4777-8777-777777777777');
       };
       const checks = {
         warehouseManagerNeedsExplicitAutoGrant: await evaluate({
@@ -359,8 +367,23 @@ const fs = require('fs');
           profile: { can_approve_without_workflow: true }
         }) === true
       };
+      store.authorizationGrantRows = [{
+        id: 'auto-approval-deny', subject_type: 'USER', permission_key: auto,
+        effect: 'DENY', resource_type: 'transaction', resource_id: null,
+        warehouse_id: warehouseId, scope_type: 'WAREHOUSE', conditions: {},
+        valid_from: new Date(Date.now() - 60000).toISOString(), valid_until: null
+      }, {
+        id: 'auto-approval-create', subject_type: 'USER', permission_key: issue,
+        effect: 'ALLOW', resource_type: 'transaction', resource_id: null,
+        warehouse_id: warehouseId, scope_type: 'WAREHOUSE', conditions: {},
+        valid_from: new Date(Date.now() - 60000).toISOString(), valid_until: null
+      }];
+      store.authorizationGrantRowsUserId = userId;
+      window.__session = { id: userId, role: 'CLERK', profile: { id: userId, can_approve_without_workflow: true } };
+      checks.explicitDenyOverridesAutoApproval = await shouldAutoApprove('ISSUE', warehouseId, '77777777-7777-4777-8777-777777777777') === false;
+      store.authorizationGrantRows = originalGrantRows;
+      store.authorizationGrantRowsUserId = originalGrantRowsUserId;
       window.__session = originalSession;
-      window.orshapSupabaseReady = originalClient;
       return checks;
     });
     const autoApprovalFailures = Object.entries(autoApprovalChecks).filter(([, value]) => value !== true);
