@@ -91,7 +91,6 @@ function render() {
   const orders = ordersFiltered();
   const totalSent = lines.reduce((n, t) => n + Number(t.quantity || 0), 0);
   const totalReceived = lines.reduce((n, t) => n + Number(t.received_quantity || 0), 0);
-  const can = canTransfer();
   const canCreate = canCreateTransfer();
   const canReceive = canReceiveTransfer();
   const canReject = canRejectTransferReceipt();
