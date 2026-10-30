@@ -455,14 +455,17 @@ function quarantineLegacyMasterQueue() {
   const quarantined = readLegacyMasterQuarantine();
   const pendingEntries = entries.filter(entry => entry?.status !== 'SYNCED');
   if (pendingEntries.length) store.legacyMasterDataNeedsRefresh = true;
+  let refreshBarrierPersisted = pendingEntries.length === 0;
   try {
     if (pendingEntries.length) localStorage.setItem(refreshKey, '1');
     const refreshMarkerStored = localStorage.getItem(refreshKey) === '1';
     if (pendingEntries.length && !refreshMarkerStored) {
       throw new Error('Unable to persist legacy master refresh barrier');
     }
+    refreshBarrierPersisted = pendingEntries.length === 0 || refreshMarkerStored;
     store.legacyMasterDataNeedsRefresh = pendingEntries.length > 0 || refreshMarkerStored;
   } catch (e) {
+    refreshBarrierPersisted = false;
     store.legacyMasterDataNeedsRefresh = true;
     console.warn('[store] legacy master refresh barrier failed:', e);
   }
@@ -483,8 +486,8 @@ function quarantineLegacyMasterQueue() {
     seen.add(operationId);
   }
   try {
-    if (pendingEntries.length && !store.legacyMasterDataNeedsRefresh) {
-      throw new Error('Legacy master refresh barrier is not active');
+    if (pendingEntries.length && !refreshBarrierPersisted) {
+      throw new Error('Legacy master refresh barrier could not be persisted; legacy queue retained.');
     }
     localStorage.setItem(MASTER_QUARANTINE_PREFIX + userId, JSON.stringify(quarantined));
     localStorage.removeItem(legacyKey);
