@@ -16,7 +16,6 @@ DECLARE
   wrapper_def text;
   wrapper_new text;
   duplicate_wrapper_guard text;
-  duplicate_inner_scope_guard text;
 BEGIN
   SELECT pg_get_functiondef(
     'public.receive_stock_transfer_quantity_at_shelf_v2(uuid,numeric,uuid,boolean,text)'::regprocedure
@@ -52,17 +51,6 @@ BEGIN
 
   audit_old := 'VALUES(v_user,''STOCK_TRANSFER_RECEIPT_RECONCILED'',''STOCK_TRANSFER'',p_transfer_id::text,v_dst.warehouse_id,v_t.reference_no,';
   audit_new := 'VALUES(v_user,''STOCK_TRANSFER_RECEIPT_RECONCILED'',''STOCK_TRANSFER'',p_transfer_id::text,COALESCE(v_dst.warehouse_id,v_t.destination_warehouse_id),v_t.reference_no,';
-  duplicate_inner_scope_guard := '  IF NOT public.current_user_can_access_warehouse(v_t.destination_warehouse_id) THEN' || E'\n' ||
-    '    RAISE EXCEPTION ''User is not assigned to the destination warehouse'' USING ERRCODE=''42501'';' || E'\n' ||
-    '  END IF;' || E'\n';
-  -- Keep exactly one destination-warehouse authorization check in the inner
-  -- receipt writer; the previous duplicate added no protection.
-  IF position(duplicate_inner_scope_guard IN d)>0 THEN
-    n := replace(d, duplicate_inner_scope_guard, '');
-    IF n=d THEN RAISE EXCEPTION 'Could not remove duplicate inner receipt warehouse guard'; END IF;
-    d := n;
-  END IF;
-
   IF position(audit_new IN d)=0 THEN
     IF position(audit_old IN d)=0 THEN RAISE EXCEPTION 'Transfer receipt audit insert did not match expected definition'; END IF;
     n := replace(d, audit_old, audit_new);
