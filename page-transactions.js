@@ -169,8 +169,8 @@ function render() {
       + card('', empty(tx('لا تملك صلاحية عرض السندات', 'You do not have permission to view vouchers')));
   }
   const canNew = ['GRN', 'ISSUE', 'ADJUSTMENT_IN', 'ADJUSTMENT_OUT'].some(canCreateType);
-  const canCustomerReturn = canDatabasePermission('action:transaction:grn:create');
-  const canSupplierReturn = canDatabasePermission('action:transaction:issue:create');
+  const canCustomerReturn = hasAnyEffectiveCachedGrant('action:transaction:grn:create');
+  const canSupplierReturn = hasAnyEffectiveCachedGrant('action:transaction:issue:create');
   const actions = `${canNew ? btn(`<i class="fa-solid fa-plus"></i> ${tx('سند جديد', 'New voucher')}`, 'onclick="OW.wms.newTx()"', 'primary') : ''}
     ${canCustomerReturn ? btn(`<i class="fa-solid fa-rotate-left"></i> ${tx('مرتجع من عميل', 'Customer return')}`, 'onclick="OW.wms.openReturn(\'RETURN_FROM_CUSTOMER\')"', 'secondary') : ''}
     ${canCustomerReturn ? btn(`<i class="fa-solid fa-arrow-rotate-left"></i> ${tx('مرتجع من الاستخدام', 'Return from usage')}`, 'onclick="OW.wms.openReturn(\'RETURN_FROM_USAGE\')"', 'secondary') : ''}
@@ -978,11 +978,11 @@ function openReturn(type) {
   const returnType = String(type || 'RETURN_FROM_CUSTOMER').toUpperCase();
   const permission = returnType === 'RETURN_TO_SUPPLIER' ? 'action:transaction:issue:create' : 'action:transaction:grn:create';
   const warehouses = accessibleWarehouseOptions();
-  const warehouseId = warehouses[0]?.value || '';
-  if (!canDatabasePermission(permission, {
-    resource_type: 'transaction', warehouse_id: warehouseId,
+  const warehouseId = warehouses.find(option => canDatabasePermission(permission, {
+    resource_type: 'transaction', warehouse_id: option.value,
     owner_id: window.__session?.id, transaction_type: returnType, offline: false
-  })) return toast(tx('لا تملك صلاحية إنشاء هذا المرتجع في المستودع المحدد.', 'You do not have permission to create this return in the selected warehouse.'), 'error');
+  }))?.value || '';
+  if (!warehouseId) return toast(tx('لا تملك صلاحية إنشاء هذا المرتجع في أي من مستودعاتك.', 'You do not have permission to create this return in any of your accessible warehouses.'), 'error');
   const shelves = shelfOptions({ warehouseId });
   const title = returnType === 'RETURN_TO_SUPPLIER'
     ? tx('مرتجع إلى مورد', 'Return to supplier')
