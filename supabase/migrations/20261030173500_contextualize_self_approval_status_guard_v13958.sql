@@ -59,9 +59,13 @@ BEGIN
   SELECT pg_get_functiondef('public.guard_transaction_status_change()'::regprocedure)
     INTO v_definition;
 
-  IF position('public.authorize_action(''action:transaction:auto_approve'',' IN v_definition) = 0
-     OR position('public.authorize_action(
-      v_create_permission,' IN v_definition) = 0 THEN
+  IF position('action:transaction:auto_approve' IN v_definition) = 0
+     OR position('v_create_permission,' IN v_definition) = 0
+     OR position('NEW.id' IN v_definition) = 0
+     OR position('NEW.warehouse_id' IN v_definition) = 0
+     OR position('owner_id' IN v_definition) = 0
+     OR (length(v_definition) - length(replace(v_definition, 'public.authorize_action(', '')))
+          < 2 * length('public.authorize_action(') THEN
     RAISE EXCEPTION 'Self-approval status guard is not using contextual authorization';
   END IF;
 
