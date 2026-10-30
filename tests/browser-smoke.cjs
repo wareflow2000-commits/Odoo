@@ -108,6 +108,22 @@ const fs = require('fs');
       }];
       store.authorizationGrantRowsUserId = window.__session.id;
       store.authorizationPermissions = ['action:stocktake:count'];
+      const offlineCountFixtureState = {
+        sessionId: window.__session?.id,
+        profileId: window.__session?.profile?.id,
+        assigned: window.__session?.profile?.assigned_warehouse_ids,
+        warehouseId, scopeConfigLoaded: store.scopeConfigLoaded,
+        legacyMasterDataNeedsRefresh: store.legacyMasterDataNeedsRefresh,
+        offline: window.__session?.offline
+      };
+      if (offlineCountFixtureState.sessionId !== userId
+          || offlineCountFixtureState.profileId !== userId
+          || JSON.stringify(offlineCountFixtureState.assigned) !== JSON.stringify([warehouseId])
+          || offlineCountFixtureState.scopeConfigLoaded !== true
+          || offlineCountFixtureState.legacyMasterDataNeedsRefresh !== false
+          || offlineCountFixtureState.offline !== true) {
+        throw new Error('Invalid offline stocktake fixture: ' + JSON.stringify(offlineCountFixtureState));
+      }
       const saved = await saveStocktakeCount(lineId, 2, 'BOX');
       // Session creation and count execution are separate grants. Neither
       // MANAGER nor ADMIN bypasses the count grant, but a delegated counter
