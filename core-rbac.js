@@ -85,13 +85,47 @@ export function canViewSystemQty() {
   return canDatabasePermission('action:stocktake:view_system_qty');
 }
 
+const SELF_APPROVAL_CREATE_PERMISSION = Object.freeze({
+  GRN: 'action:transaction:grn:create',
+  RETURN_FROM_USAGE: 'action:transaction:grn:create',
+  RETURN_FROM_CUSTOMER: 'action:transaction:grn:create',
+  ISSUE: 'action:transaction:issue:create',
+  RETURN_TO_SUPPLIER: 'action:transaction:issue:create',
+  ADJUSTMENT_IN: 'action:transaction:adjustment:create',
+  ADJUSTMENT_OUT: 'action:transaction:adjustment:create',
+  OPENING_BALANCE: 'action:transaction:adjustment:create'
+});
+
 export function canApproveTransactions(transaction = null) {
   if (!transaction) return hasAnyEffectiveCachedGrant('action:transaction:approve');
-  return canDatabasePermission('action:transaction:approve', {
+
+  const user = currentUser();
+  const context = {
     resource_type: 'transaction', resource_id: transaction.id,
     warehouse_id: transaction.warehouse_id, owner_id: transaction.created_by,
-    status: transaction.status, transaction_type: transaction.transaction_type
-  });
+    status: transaction.status, transaction_type: transaction.transaction_type,
+    offline: false
+  };
+
+  // The database allows self-approval only through its explicit exception:
+  // user flag + auto-approval grant + matching create grant. Mirror that rule
+  // for button visibility; approve_transaction remains the authoritative gate.
+  if (transaction.created_by && transaction.created_by === user?.id) {
+    const profile = user.profile?.id === user.id
+      ? user.profile
+      : store.get('profiles').find(row => row.id === user.id) || null;
+    if (profile?.can_approve_without_workflow !== true) return false;
+
+    const createPermission = SELF_APPROVAL_CREATE_PERMISSION[
+      String(transaction.transaction_type || '').toUpperCase()
+    ];
+    if (!createPermission) return false;
+
+    return hasEffectiveCachedGrant('action:transaction:auto_approve', context)
+      && hasEffectiveCachedGrant(createPermission, context);
+  }
+
+  return canDatabasePermission('action:transaction:approve', context);
 }
 
 export function canCreateTransactionType(type, warehouseId = null) {
