@@ -12,6 +12,7 @@ DECLARE
   v_user_id uuid := (SELECT auth.uid());
   v_can_auto_approve boolean := false;
   v_has_auto_approve_permission boolean := false;
+  v_require_approval boolean := true;
 BEGIN
   IF NEW.status IS NOT DISTINCT FROM OLD.status THEN
     RETURN NEW;
@@ -36,8 +37,18 @@ BEGIN
     FROM public.profiles p
     WHERE p.id = v_user_id AND p.status = 'ACTIVE';
 
-    IF NOT (COALESCE(v_can_auto_approve, false)
-            AND COALESCE(v_has_auto_approve_permission, false)) THEN
+    SELECT COALESCE(
+      (SELECT upper(btrim(s.value)) <> 'FALSE'
+       FROM public.system_settings s
+       WHERE s.key = 'REQUIRE_APPROVAL'),
+      true
+    ) INTO v_require_approval;
+
+    -- Preserve the currently documented global direct-execution mode. When
+    -- approval is required, self-approval needs both explicit controls.
+    IF v_require_approval
+       AND NOT (COALESCE(v_can_auto_approve, false)
+                AND COALESCE(v_has_auto_approve_permission, false)) THEN
       RAISE EXCEPTION 'Transaction creator cannot approve their own transaction without explicit auto-approval authorization'
         USING ERRCODE = '42501';
     END IF;
