@@ -479,13 +479,15 @@ const fs = require('fs');
         profile: { role: 'WAREHOUSE_MANAGER', custom_permissions: [
           'action:stocktake:start', 'action:transaction:issue:create',
           'page:inventory:access', 'action:stocktake:view_system_qty',
-          'action:transaction:approve', 'action:settings:manage'
+          'action:transaction:approve', 'action:settings:manage',
+          'action:transaction:opening_balance:create'
         ] }
       };
       store.authorizationPermissions = [
         'action:stocktake:start', 'action:transaction:issue:create',
         'page:inventory:access', 'action:stocktake:view_system_qty',
-        'action:transaction:approve', 'action:settings:manage'
+        'action:transaction:approve', 'action:settings:manage',
+        'action:transaction:opening_balance:create'
       ];
       const warehouseManagerExplicitGrant = canDatabasePermission('action:stocktake:start')
         && can('action:transaction:issue:create') && canAccessPage('inventory')
