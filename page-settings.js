@@ -1486,6 +1486,10 @@ function linkUserModal() {
 
 function unitModal(id) {
   const u = id ? store.byId('units', id) : null;
+  if (!canManageSystemSettings() || !navigator.onLine || window.__session?.offline) {
+    toast(tx('إدارة الوحدات تتطلب صلاحية مدير النظام واتصالًا مباشرًا.', 'Unit management requires system-manager access and a live connection.'), 'warning');
+    return;
+  }
   modal({
     title: tx('وحدة قياس', 'Unit of measure'), size: 'sm',
     body: `<form id="unitForm" class="o_form_grid">
@@ -1497,6 +1501,10 @@ function unitModal(id) {
     onMount: (el, close) => {
       el.querySelector('#unCancel').onclick = close;
       el.querySelector('#unSave').onclick = async () => {
+        if (!canManageSystemSettings() || !navigator.onLine || window.__session?.offline) {
+          toast(tx('الصلاحية أو الاتصال غير متاح. أعد المحاولة بعد التحقق.', 'Permission or connection unavailable. Reconnect and retry.'), 'warning');
+          return;
+        }
         const d = Object.fromEntries(new FormData(el.querySelector('#unitForm')).entries());
         d.code = String(d.code || '').trim().toUpperCase();
         d.name = String(d.name || '').trim();
@@ -1511,6 +1519,10 @@ function unitModal(id) {
 }
 
 async function removeUnit(id) {
+  if (!canManageSystemSettings() || !navigator.onLine || window.__session?.offline) {
+    toast(tx('حذف الوحدات يتطلب صلاحية مدير النظام واتصالًا مباشرًا.', 'Deleting units requires system-manager access and a live connection.'), 'warning');
+    return;
+  }
   if (!await confirmDialog({
     title: tx('حذف وحدة', 'Delete unit'),
     message: tx('قد تفشل العملية إذا كانت الوحدة مستخدمة.', 'This may fail if the unit is in use.'),
@@ -1522,6 +1534,10 @@ async function removeUnit(id) {
 
 function convModal(id) {
   const c = id ? store.byId('item_unit_conversions', id) : null;
+  if (!canManageSystemSettings() || !navigator.onLine || window.__session?.offline) {
+    toast(tx('إدارة معاملات الوحدات تتطلب صلاحية مدير النظام واتصالًا مباشرًا.', 'Unit-conversion management requires system-manager access and a live connection.'), 'warning');
+    return;
+  }
   const unitOptions = store.get('units')
     .map(u => String(u.code || '').trim().toUpperCase())
     .filter(Boolean)
@@ -1557,6 +1573,10 @@ function convModal(id) {
       itemSel.onchange = () => { hint.innerHTML = `<small class="o_hint">${esc(baseHint(itemSel.value))}</small>`; };
       el.querySelector('#cvCancel').onclick = close;
       el.querySelector('#cvSave').onclick = async () => {
+        if (!canManageSystemSettings() || !navigator.onLine || window.__session?.offline) {
+          toast(tx('الصلاحية أو الاتصال غير متاح. أعد المحاولة بعد التحقق.', 'Permission or connection unavailable. Reconnect and retry.'), 'warning');
+          return;
+        }
         const d = Object.fromEntries(new FormData(form).entries());
         const item = store.byId('items', d.item_id);
         const code = String(d.unit_code || '').trim().toUpperCase();
@@ -1591,6 +1611,10 @@ function convModal(id) {
 }
 
 async function removeConv(id) {
+  if (!canManageSystemSettings() || !navigator.onLine || window.__session?.offline) {
+    toast(tx('حذف تحويل الوحدة يتطلب صلاحية مدير النظام واتصالًا مباشرًا.', 'Deleting a unit conversion requires system-manager access and a live connection.'), 'warning');
+    return;
+  }
   if (!await confirmDialog({ title: tx('حذف تحويل', 'Delete conversion'),
     message: tx('هل تريد حذف هذا التحويل؟', 'Delete this conversion?'),
     confirmText: tx('حذف', 'Delete'), tone: 'danger' })) return;
