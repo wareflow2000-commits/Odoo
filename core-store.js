@@ -196,17 +196,11 @@ export function loadLocal() {
         ? currentUserId() : null;
       if (store.authorizationPermissionsUserId === null) store.authorizationPermissions = [];
     } else {
-      // One-time migration for snapshots written before effective grants were
-      // cached. These legacy keys are only an offline UI hint; every sync/write
-      // is re-authorized against authorization_grants by the database.
-      const roleName = String(window.__session?.role || window.__session?.profile?.role || '').toUpperCase();
-      const cachedRoleKeys = store.get('role_permissions')
-        .filter(row => String(row.role_name || '').toUpperCase() === roleName)
-        .map(row => row.permission_key);
-      const cachedUserKeys = Array.isArray(window.__session?.profile?.custom_permissions)
-        ? window.__session.profile.custom_permissions : [];
-      store.authorizationPermissions = [...new Set([...cachedRoleKeys, ...cachedUserKeys]
-        .filter(x => typeof x === 'string'))];
+      // Older snapshots do not prove which authorization grants are currently
+      // active, scoped, or revoked. Fail closed rather than reconstructing
+      // permissions from the deprecated role_permissions/custom_permissions
+      // projections; a live authorization refresh is required.
+      store.authorizationPermissions = [];
       store.authorizationPermissionsUserId = currentUserId();
     }
     enrichAll();
