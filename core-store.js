@@ -441,7 +441,8 @@ function quarantineLegacyMasterQueue() {
     return readLegacyMasterQuarantine();
   }
   if (!raw) {
-    store.legacyMasterDataNeedsRefresh = localStorage.getItem(refreshKey) === '1';
+    try { store.legacyMasterDataNeedsRefresh = localStorage.getItem(refreshKey) === '1'; }
+    catch (_) { store.legacyMasterDataNeedsRefresh = true; }
     return readLegacyMasterQuarantine();
   }
 
@@ -453,8 +454,18 @@ function quarantineLegacyMasterQueue() {
   }];
   const quarantined = readLegacyMasterQuarantine();
   const pendingEntries = entries.filter(entry => entry?.status !== 'SYNCED');
-  if (pendingEntries.length) localStorage.setItem(refreshKey, '1');
-  store.legacyMasterDataNeedsRefresh = localStorage.getItem(refreshKey) === '1';
+  if (pendingEntries.length) store.legacyMasterDataNeedsRefresh = true;
+  try {
+    if (pendingEntries.length) localStorage.setItem(refreshKey, '1');
+    const refreshMarkerStored = localStorage.getItem(refreshKey) === '1';
+    if (pendingEntries.length && !refreshMarkerStored) {
+      throw new Error('Unable to persist legacy master refresh barrier');
+    }
+    store.legacyMasterDataNeedsRefresh = pendingEntries.length > 0 || refreshMarkerStored;
+  } catch (e) {
+    store.legacyMasterDataNeedsRefresh = true;
+    console.warn('[store] legacy master refresh barrier failed:', e);
+  }
   const seen = new Set(quarantined.map(row => row?.operation_id).filter(Boolean));
   for (let i = 0; i < entries.length; i++) {
     const entry = entries[i];
@@ -472,9 +483,15 @@ function quarantineLegacyMasterQueue() {
     seen.add(operationId);
   }
   try {
+    if (pendingEntries.length && !store.legacyMasterDataNeedsRefresh) {
+      throw new Error('Legacy master refresh barrier is not active');
+    }
     localStorage.setItem(MASTER_QUARANTINE_PREFIX + userId, JSON.stringify(quarantined));
     localStorage.removeItem(legacyKey);
-  } catch (e) { console.warn('[store] legacy master queue quarantine failed:', e); }
+  } catch (e) {
+    store.legacyMasterDataNeedsRefresh = true;
+    console.warn('[store] legacy master queue quarantine failed:', e);
+  }
   return quarantined;
 }
 
