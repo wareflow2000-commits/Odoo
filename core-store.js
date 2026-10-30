@@ -109,8 +109,9 @@ export function offlineWarehouseAllowed(warehouseId) {
   const mode = String(roleScope?.scope_mode || 'INHERIT').toUpperCase();
   const roleIds = Array.isArray(roleScope?.warehouse_ids) ? roleScope.warehouse_ids : [];
   if (mode === 'SELECTED' && !roleIds.includes(warehouseId)) return false;
-  if (mode === 'ALL' || mode === 'SELECTED') return true;
-  return ['SUPER_ADMIN', 'ADMIN'].includes(String(session.role || '').toUpperCase());
+  // With an explicit user assignment, every non-SELECTED role mode preserves
+  // that assignment as the effective scope (including MANAGER/INHERIT).
+  return true;
 }
 
 /* ── local persistence ──────────────────────────────────────────────────── */
