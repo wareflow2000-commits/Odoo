@@ -1084,6 +1084,10 @@ function openReturn(type) {
         if (!reference || /^LOCAL-/i.test(reference)) problems.push(tx('انتظر توليد رقم السند الرسمي. المرتجعات تتطلب اتصالاً مباشراً.',
           'Wait for the official voucher reference. Returns require a live connection.'));
         if (!data.warehouse_id) problems.push(tx('اختر المستودع.', 'Select a warehouse.'));
+        if (data.warehouse_id && !canDatabasePermission(permission, {
+          resource_type: 'transaction', warehouse_id: data.warehouse_id,
+          owner_id: window.__session?.id, transaction_type: returnType, offline: false
+        })) problems.push(tx('لا تملك تفويض إنشاء هذا المرتجع في المستودع المحدد.', 'You do not have a create grant for this return in the selected warehouse.'));
         if (!data.item_id) problems.push(tx('اختر الصنف.', 'Select an item.'));
         if (!data.shelf_id || !shelfRow || shelfRow.warehouse_id !== data.warehouse_id) problems.push(tx('اختر رفاً يتبع المستودع.', 'Select a shelf in that warehouse.'));
         if (!Number.isFinite(q) || q <= 0) problems.push(tx('أدخل كمية موجبة.', 'Enter a positive quantity.'));
