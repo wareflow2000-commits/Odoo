@@ -484,6 +484,9 @@ const fs = require('fs');
           'table:inventory_ledger:view', 'table:transaction_ledger:view', 'table:audit_logs:view'
         ] }
       };
+      const legacyCustomPermissionsNotAuthoritative =
+        !canDatabasePermission('action:transaction:issue:create')
+        && !canAccessPage('inventory');
       store.authorizationPermissions = [
         'action:stocktake:start', 'action:transaction:issue:create',
         'page:inventory:access', 'action:stocktake:view_system_qty',
@@ -498,7 +501,8 @@ const fs = require('fs');
         && canDatabasePermission('action:chat:manage')
         && canDatabasePermission('table:inventory_ledger:view')
         && canDatabasePermission('table:transaction_ledger:view')
-        && canDatabasePermission('table:audit_logs:view');
+        && canDatabasePermission('table:audit_logs:view')
+        && legacyCustomPermissionsNotAuthoritative;
       window.__session = {
         id: 'role-contract-wildcard',
         role: 'WAREHOUSE_MANAGER',
