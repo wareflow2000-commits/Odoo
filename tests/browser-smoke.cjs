@@ -96,6 +96,10 @@ const fs = require('fs');
       const originalAuthorizationPermissions = store.authorizationPermissions;
       const originalAuthorizationGrantRows = store.authorizationGrantRows;
       const originalAuthorizationGrantRowsUserId = store.authorizationGrantRowsUserId;
+      const originalLegacyMasterDataNeedsRefresh = store.legacyMasterDataNeedsRefresh;
+      // This fixture contains no legacy master-data outbox. Keep the refresh
+      // barrier disabled only for this isolated stocktake-count test.
+      store.legacyMasterDataNeedsRefresh = false;
       store.authorizationGrantRows = [{
         id: 'offline-count-grant', subject_type: 'USER', permission_key: 'action:stocktake:count',
         effect: 'ALLOW', resource_type: 'stocktake_session', resource_id: sessionId,
@@ -138,6 +142,7 @@ const fs = require('fs');
       store.authorizationPermissions = originalAuthorizationPermissions;
       store.authorizationGrantRows = originalAuthorizationGrantRows;
       store.authorizationGrantRowsUserId = originalAuthorizationGrantRowsUserId;
+      store.legacyMasterDataNeedsRefresh = originalLegacyMasterDataNeedsRefresh;
       if (countCacheSnapshot !== null) localStorage.setItem('orshap_wms_data_v5', countCacheSnapshot);
       if (countQueueKey && countQueueSnapshot !== null) localStorage.setItem(countQueueKey, countQueueSnapshot);
       const queued = queueSnapshot().some(row =>
