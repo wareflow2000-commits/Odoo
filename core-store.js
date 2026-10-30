@@ -1344,11 +1344,12 @@ async function flushStocktakeCountQueue() {
         }
       } 
       const expectedFactor = Number(row.conversion_factor || 1);
-      await rpc('save_offline_stocktake_count', {
+      await rpc('save_offline_stocktake_count_v2', {
         p_line_id: row.line_id,
         p_entered_quantity: row.entered_quantity,
         p_entered_unit: row.entered_unit || row.base_unit,
-        p_expected_factor: expectedFactor
+        p_expected_factor: expectedFactor,
+        p_operation_id: row.operation_id
       });
       row.status = 'SYNCED'; row.synced_at = new Date().toISOString(); row.last_error = null;
       changed = true; done++;
