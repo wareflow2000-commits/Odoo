@@ -253,63 +253,77 @@ const fs = require('fs');
     if (refreshFailures.length) throw new Error('Refresh/account-isolation checks failed: ' + JSON.stringify(refreshChecks));
 
 
-    // Auto-approval UI policy must mirror the database creator/self-approval guards.
+    // Auto-approval UI pre-check must defer to the server's explicit grant engine.
     const autoApprovalChecks = await page.evaluate(async () => {
-      const { store, shouldAutoApprove } = await import('/core-store.js');
+      const { shouldAutoApprove } = await import('/core-store.js');
       const originalSession = window.__session;
-      const originalRolePermissions = store.data.role_permissions;
-      const originalSettings = store.data.system_settings;
+      const originalClient = window.orshapSupabaseReady;
       const userId = '99999999-9999-4999-8999-999999999999';
       const issue = 'action:transaction:issue:create';
       const auto = 'action:transaction:auto_approve';
-      const evaluate = ({ role, setting, profile = {}, grants = [] }) => {
+      const evaluate = async ({ role, profile = {}, grants = [] }) => {
+        const grantSet = new Set(grants);
         window.__session = { id: userId, role, profile: { id: userId, ...profile } };
-        store.data.system_settings = [{ key: 'REQUIRE_APPROVAL', value: setting }];
-        store.data.role_permissions = grants.map(permission_key => ({ role_name: role, permission_key }));
-        return shouldAutoApprove('ISSUE');
+        window.orshapSupabaseReady = Promise.resolve({
+          async rpc(name, args) {
+            if (name !== 'current_user_has_permission') return { data: null, error: { message: 'unexpected RPC' } };
+            const allowed = role === 'SUPER_ADMIN' || grantSet.has(args.p_permission);
+            return { data: allowed, error: null };
+          }
+        });
+        return await shouldAutoApprove('ISSUE');
       };
       const checks = {
-        warehouseManagerNeedsExplicitAutoGrant: evaluate({
-          role: 'WAREHOUSE_MANAGER', setting: 'TRUE',
-          profile: { can_approve_without_workflow: true, custom_permissions: [issue] }
+        warehouseManagerNeedsExplicitAutoGrant: await evaluate({
+          role: 'WAREHOUSE_MANAGER',
+          profile: { can_approve_without_workflow: true },
+          grants: [issue]
         }) === false,
-        warehouseManagerExplicitDelegation: evaluate({
-          role: 'WAREHOUSE_MANAGER', setting: 'TRUE',
-          profile: { can_approve_without_workflow: true, custom_permissions: [issue, auto] }
-        }) === true,
-        managerRoleGrantsAndUserFlag: evaluate({
-          role: 'MANAGER', setting: 'TRUE',
+        warehouseManagerExplicitDelegation: await evaluate({
+          role: 'WAREHOUSE_MANAGER',
           profile: { can_approve_without_workflow: true },
           grants: [issue, auto]
         }) === true,
-        selfApprovalFlagRequired: evaluate({
-          role: 'CLERK', setting: 'TRUE',
-          profile: { can_approve_without_workflow: false, custom_permissions: [issue, auto] }
-        }) === false,
-        createPermissionRequired: evaluate({
-          role: 'SUPER_ADMIN', setting: 'TRUE',
-          profile: { can_approve_without_workflow: true, custom_permissions: [auto] }
-        }) === false,
-        clerkCannotUseGlobalDirectMode: evaluate({
-          role: 'CLERK', setting: 'false',
-          profile: { can_approve_without_workflow: false, custom_permissions: [issue] }
-        }) === false,
-        warehouseManagerCannotUseGlobalDirectMode: evaluate({
-          role: 'WAREHOUSE_MANAGER', setting: 'FALSE',
-          profile: { can_approve_without_workflow: false, custom_permissions: [issue] }
-        }) === false,
-        adminCanUseConfiguredGlobalDirectMode: evaluate({
-          role: 'ADMIN', setting: 'FALSE',
-          profile: { can_approve_without_workflow: false }
+        managerExplicitDelegation: await evaluate({
+          role: 'MANAGER',
+          profile: { can_approve_without_workflow: true },
+          grants: [issue, auto]
         }) === true,
-        zeroIsNotFalseInDatabaseContract: evaluate({
-          role: 'CLERK', setting: '0',
-          profile: { can_approve_without_workflow: false, custom_permissions: [issue] }
-        }) === false
+        selfApprovalFlagRequired: await evaluate({
+          role: 'CLERK',
+          profile: { can_approve_without_workflow: false },
+          grants: [issue, auto]
+        }) === false,
+        createPermissionRequired: await evaluate({
+          role: 'CLERK',
+          profile: { can_approve_without_workflow: true },
+          grants: [auto]
+        }) === false,
+        clerkCannotUseGlobalDirectMode: await evaluate({
+          role: 'CLERK',
+          profile: { can_approve_without_workflow: false },
+          grants: [issue]
+        }) === false,
+        managerCannotUseGlobalDirectMode: await evaluate({
+          role: 'MANAGER',
+          profile: { can_approve_without_workflow: false },
+          grants: [issue]
+        }) === false,
+        adminCannotUseGlobalDirectMode: await evaluate({
+          role: 'ADMIN',
+          profile: { can_approve_without_workflow: false }
+        }) === false,
+        superAdminStillRequiresSeparateSelfApprovalFlag: await evaluate({
+          role: 'SUPER_ADMIN',
+          profile: { can_approve_without_workflow: false }
+        }) === false,
+        superAdminWithSelfApprovalFlag: await evaluate({
+          role: 'SUPER_ADMIN',
+          profile: { can_approve_without_workflow: true }
+        }) === true
       };
       window.__session = originalSession;
-      store.data.role_permissions = originalRolePermissions;
-      store.data.system_settings = originalSettings;
+      window.orshapSupabaseReady = originalClient;
       return checks;
     });
     const autoApprovalFailures = Object.entries(autoApprovalChecks).filter(([, value]) => value !== true);
