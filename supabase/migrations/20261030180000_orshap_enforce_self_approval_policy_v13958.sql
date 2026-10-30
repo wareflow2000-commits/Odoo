@@ -114,6 +114,7 @@ BEGIN
   v_old := '    IF v_require_approval
        AND NOT (v_can_auto_approve AND v_has_auto_approve_permission) THEN';
   v_new := '    IF ((v_require_approval
+         OR v_actor_role IS NULL
          OR v_actor_role NOT IN (''SUPER_ADMIN'', ''MANAGER'', ''ADMIN''))
         AND NOT (v_can_auto_approve AND v_has_auto_approve_permission)) THEN';
   IF position(v_new IN v_guard) = 0 THEN
