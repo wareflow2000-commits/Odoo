@@ -2,10 +2,10 @@
 // OW — central store
 // ----------------------------------------------------------------------------
 // One in-memory snapshot (store.data), persisted to localStorage + optional
-// SQLite/OPFS, hydrated from Supabase, with offline queues:
-//   • master queue  → warehouses/items/units/... (non-financial master data)
-//   • tx outbox     → full transaction bundles (stock is NEVER posted offline)
-//   • offline auth  → PBKDF2 verifier cached by core-auth.js
+// SQLite/OPFS, hydrated from Supabase, with narrowly scoped offline work:
+//   • tx outbox             → ISSUE vouchers only
+//   • stocktake count queue → count entries only
+//   • offline auth          → PBKDF2 verifier cached by core-auth.js
 // ============================================================================
 import { from, rpc, sb } from './core-supabase.js';
 import { uuid, isUuid } from './core-utils.js';
@@ -16,7 +16,9 @@ export { isUuid };
 
 const LS_KEY = 'orshap_wms_data_v5';
 const LS_LANG = 'orshap_lang';
-const MASTER_PREFIX = 'orshap_master_outbox_v1:';
+// Legacy key is read only to quarantine pending master-data edits from older releases.
+const LEGACY_MASTER_PREFIX = 'orshap_master_outbox_v1:';
+const MASTER_QUARANTINE_PREFIX = 'orshap_master_outbox_quarantine_v1:';
 const OUTBOX_PREFIX = 'orshap_tx_outbox_v1:';
 const STOCKTAKE_COUNT_QUEUE_PREFIX = 'orshap_stocktake_count_queue_v1:';
 
@@ -49,13 +51,6 @@ export const TABLES = [
   'audit_logs', 'system_settings', 'profiles', 'permissions',
   'role_permissions', 'role_warehouse_scopes', 'archive_movements', 'archive_balances', 'sync_log'
 ];
-
-// Tables that can be edited offline and replayed later (no stock/financial impact).
-export const MASTER_TABLES = new Set([
-  'warehouses', 'zones', 'storage_areas',
-  'sections', 'shelves', 'items', 'item_categories', 'units',
-  'item_unit_conversions', 'system_settings'
-]);
 
 export const ELEVATED_ROLES = ['SUPER_ADMIN', 'ADMIN', 'MANAGER', 'WAREHOUSE_MANAGER'];
 export const AUTO_APPROVE_ROLES = ['SUPER_ADMIN', 'ADMIN', 'MANAGER', 'WAREHOUSE_MANAGER'];
@@ -136,6 +131,7 @@ export function persist(immediate = false) {
 
 export function loadLocal() {
   try {
+    quarantineLegacyMasterQueue();
     const raw = localStorage.getItem(LS_KEY);
     if (!raw) return false;
     const parsed = JSON.parse(raw);
@@ -270,7 +266,6 @@ export async function pullAll({ silent = false } = {}) {
     loadLocal();
     // The persisted cache already contains the overlay, but reapplying it keeps
     // the local queue visible even when another tab cleared the snapshot.
-    applyMasterOverlay();
     applyOutboxOverlay();
     applyStocktakeCountOverlay();
     applyAccessFilter();
@@ -319,7 +314,6 @@ export async function pullAll({ silent = false } = {}) {
     // Optional tables that failed to read retain their prior cache; only a
     // successful query returning zero rows is allowed to replace data with [].
     enrichAll();
-    applyMasterOverlay();
     applyOutboxOverlay();
     applyStocktakeCountOverlay();
     applyAccessFilter();
@@ -335,7 +329,6 @@ export async function pullAll({ silent = false } = {}) {
     if (!store.loaded) loadLocal();
     // A failed remote pull must not hide durable local work, even when the
     // store was already marked loaded before the request failed.
-    applyMasterOverlay();
     applyOutboxOverlay();
     applyStocktakeCountOverlay();
     applyAccessFilter();
@@ -420,124 +413,57 @@ export function applyAccessFilter() {
   enrichAll();
 }
 
-/* ── offline master queue ───────────────────────────────────────────────── */
+/* ── legacy master-queue quarantine (never replay) ─────────────────────── */
 
-export function masterQueue() {
+function readLegacyMasterQuarantine() {
   try {
-    const a = JSON.parse(localStorage.getItem(MASTER_PREFIX + currentUserId()) || '[]');
-    return Array.isArray(a) ? a : [];
+    const value = JSON.parse(localStorage.getItem(MASTER_QUARANTINE_PREFIX + currentUserId()) || '[]');
+    return Array.isArray(value) ? value : [];
   } catch (_) { return []; }
 }
-function masterQueueWrite(a) {
-  localStorage.setItem(MASTER_PREFIX + currentUserId(), JSON.stringify(a));
-  window.dispatchEvent(new CustomEvent('orshap-master-queue-changed', { detail: { count: a.filter(x => x.status !== 'SYNCED').length } }));
-}
 
-function queueMaster(kind, table, id, row) {
-  if (!MASTER_TABLES.has(table)) throw new Error(
-    isAr() ? 'هذه العملية تتطلب اتصالاً بالإنترنت' : 'This operation requires an internet connection');
-  if (!window.__session?.id) throw new Error(isAr() ? 'سجّل الدخول أولًا' : 'Sign in first');
-  const pk = table === 'system_settings' ? 'key' : 'id';
-  const savedId = id || row?.[pk] || uid();
-  const payload = { ...(row || {}), [pk]: savedId };
-  const list = store.get(table);
-  const i = list.findIndex(x => x[pk] === savedId);
-  if (kind === 'insert') {
-    if (!payload.created_at && pk === 'id') payload.created_at = new Date().toISOString();
-    if (i < 0) list.push(payload); else list[i] = payload;
-  } else if (kind === 'update') {
-    const next = { ...(i >= 0 ? list[i] : {}), ...payload, updated_at: new Date().toISOString() };
-    if (i >= 0) list[i] = next; else list.push(next);
-  } else if (kind === 'delete') {
-    if (i >= 0) list.splice(i, 1);
-  }
-  const q = masterQueue();
-  q.push({ operation_id: uid(), kind, table, id: savedId, pk, row: payload, created_at: new Date().toISOString(), status: 'PENDING', attempts: 0 });
-  masterQueueWrite(q);
-  enrichAll();
-  persist(true);
-  store.emit();
-  return payload;
-}
+function quarantineLegacyMasterQueue() {
+  const userId = window.__session?.id;
+  if (!userId) return [];
+  const legacyKey = LEGACY_MASTER_PREFIX + userId;
+  let raw;
+  try { raw = localStorage.getItem(legacyKey); } catch (_) { return readLegacyMasterQuarantine(); }
+  if (!raw) return readLegacyMasterQuarantine();
 
-function applyMasterOverlay() {
-  const q = masterQueue();
-  if (!q.length) return;
-  for (const op of q) {
-    if (!MASTER_TABLES.has(op.table)) continue;
-    const pk = op.pk || (op.table === 'system_settings' ? 'key' : 'id');
-    const list = store.get(op.table);
-    const i = list.findIndex(x => x[pk] === op.id);
-    if (op.kind === 'delete') { if (i >= 0) list.splice(i, 1); }
-    else if (op.kind === 'insert') { if (i < 0) list.push({ ...op.row }); else list[i] = { ...list[i], ...op.row }; }
-    else if (op.kind === 'update') { if (i >= 0) list[i] = { ...list[i], ...op.row }; else list.push({ ...op.row }); }
+  let legacy;
+  try { legacy = JSON.parse(raw); } catch (_) { legacy = null; }
+  const entries = Array.isArray(legacy) ? legacy : [{
+    operation_id: 'legacy-malformed-master-queue', table: 'legacy master queue',
+    kind: 'unreadable', raw_payload: raw
+  }];
+  const quarantined = readLegacyMasterQuarantine();
+  const seen = new Set(quarantined.map(row => row?.operation_id).filter(Boolean));
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    if (entry?.status === 'SYNCED') continue;
+    const row = entry && typeof entry === 'object' && !Array.isArray(entry) ? entry : {
+      operation_id: `legacy-master-${i}`, raw_payload: String(entry)
+    };
+    const operationId = row.operation_id || `legacy-master-${i}-${row.table || 'unknown'}-${row.id || ''}`;
+    if (seen.has(operationId)) continue;
+    quarantined.push({
+      ...row, operation_id: operationId, status: 'CONFLICT',
+      last_error: 'BLOCKED_BY_OFFLINE_POLICY: Master-data changes require a live connection. Review this legacy entry and re-enter the change online; it will not be synchronized.',
+      policy_blocked_at: new Date().toISOString()
+    });
+    seen.add(operationId);
   }
-  enrichAll();
-}
-
-export async function flushMasterQueue() {
-  if (!navigator.onLine || !window.__session?.id) return 0;
-  if (!(await ensureOnlineSession())) return 0;
-  const q = masterQueue();
-  if (!q.length) return 0;
-  let changed = false, done = 0;
-  for (let i = 0; i < q.length;) {
-    const op = q[i];
-    if (!op || typeof op !== 'object' || Array.isArray(op)) {
-      q.splice(i, 1);
-      changed = true;
-      continue;
-    }
-    if (op.status === 'CONFLICT' || op.status === 'ERROR') { i++; continue; }
-    const pk = op.table === 'system_settings' ? 'key' : 'id';
-    const valid = MASTER_TABLES.has(op.table)
-      && ['insert', 'update', 'delete'].includes(op.kind)
-      && op.pk === pk
-      && !!op.id
-      && (op.kind === 'delete' || (op.row && typeof op.row === 'object'
-        && !Array.isArray(op.row) && op.row[pk] === op.id));
-    if (!valid) {
-      op.status = 'ERROR';
-      op.last_error = 'Invalid or unsupported offline master-data operation; retained for review and not sent to the server.';
-      changed = true;
-      i++;
-      continue;
-    }
-    try {
-      let result;
-      if (op.kind === 'insert') {
-        const row = { ...op.row };
-        delete row.variance;
-        result = await (await from(op.table)).upsert(row, { onConflict: pk });
-      } else if (op.kind === 'update') {
-        const patch = { ...op.row };
-        delete patch.variance;
-        delete patch[pk];
-        result = await (await from(op.table)).update(patch).eq(pk, op.id);
-      } else {
-        result = await (await from(op.table)).delete().eq(pk, op.id);
-      }
-      if (result?.error) throw result.error;
-      q.splice(i, 1);
-      changed = true;
-      done++;
-    } catch (e) {
-      op.attempts = (op.attempts || 0) + 1;
-      op.last_error = String(e?.message || e);
-      op.status = isNetworkFailure(e) ? 'PENDING' : 'ERROR';
-      changed = true;
-      if (op.status === 'PENDING') break;
-      i++;
-    }
-  }
-  if (changed) masterQueueWrite(q);
-  if (!q.length) await pullAll({ silent: true }).catch(() => {});
-  return done;
+  try {
+    localStorage.setItem(MASTER_QUARANTINE_PREFIX + userId, JSON.stringify(quarantined));
+    localStorage.removeItem(legacyKey);
+  } catch (e) { console.warn('[store] legacy master queue quarantine failed:', e); }
+  return quarantined;
 }
 
 export async function retryQueueErrors() {
   let n = 0;
-  for (const key of [MASTER_PREFIX + currentUserId(), OUTBOX_PREFIX + currentUserId()]) {
+  for (const prefix of [OUTBOX_PREFIX, STOCKTAKE_COUNT_QUEUE_PREFIX]) {
+    const key = prefix + currentUserId();
     try {
       const q = JSON.parse(localStorage.getItem(key) || '[]');
       if (!Array.isArray(q)) continue;
@@ -548,74 +474,54 @@ export async function retryQueueErrors() {
   return n;
 }
 
-/* ── generic row mutations ──────────────────────────────────────────────── */
+/* ── generic row mutations: live connection required ────────────────────── */
 
 export async function insertRow(table, row) {
-  if (!navigator.onLine && MASTER_TABLES.has(table)) return queueMaster('insert', table, null, row);
-  try {
-    const { data, error } = await (await from(table)).insert(row).select().single();
-    if (error) throw error;
-    await pullAll({ silent: true }).catch(() => {});
-    return data;
-  } catch (e) {
-    if (MASTER_TABLES.has(table) && isNetworkFailure(e)) {
-      return queueMaster('insert', table, null, row);
-    }
-    throw e;
-  }
+  requireLiveConnection(
+    'هذه العملية تتطلب اتصالًا مباشرًا بالخادم. لا يُسمح باستيراد أو تعديل البيانات الرئيسية دون اتصال.',
+    'This operation requires a live server connection. Master-data changes cannot be queued offline.'
+  );
+  const { data, error } = await (await from(table)).insert(row).select().single();
+  if (error) throw error;
+  await pullAll({ silent: true }).catch(() => {});
+  return data;
 }
 
 export async function updateRow(table, id, patch) {
-  if (!navigator.onLine && MASTER_TABLES.has(table)) return queueMaster('update', table, id, patch);
-  try {
-    const { data, error } = await (await from(table)).update(patch).eq('id', id).select().single();
-    if (error) throw error;
-    await pullAll({ silent: true }).catch(() => {});
-    return data;
-  } catch (e) {
-    if (MASTER_TABLES.has(table) && isNetworkFailure(e)) {
-      return queueMaster('update', table, id, patch);
-    }
-    throw e;
-  }
+  requireLiveConnection(
+    'هذه العملية تتطلب اتصالًا مباشرًا بالخادم. لا يُسمح باستيراد أو تعديل البيانات الرئيسية دون اتصال.',
+    'This operation requires a live server connection. Master-data changes cannot be queued offline.'
+  );
+  const { data, error } = await (await from(table)).update(patch).eq('id', id).select().single();
+  if (error) throw error;
+  await pullAll({ silent: true }).catch(() => {});
+  return data;
 }
 
 export async function deleteRow(table, id) {
-  if (!navigator.onLine && MASTER_TABLES.has(table)) return queueMaster('delete', table, id, {});
-  try {
-    const { error } = await (await from(table)).delete().eq('id', id);
-    if (error) throw error;
-    await pullAll({ silent: true }).catch(() => {});
-    return true;
-  } catch (e) {
-    if (MASTER_TABLES.has(table) && isNetworkFailure(e)) {
-      return queueMaster('delete', table, id, {});
-    }
-    throw e;
-  }
+  requireLiveConnection(
+    'هذه العملية تتطلب اتصالًا مباشرًا بالخادم. لا يُسمح باستيراد أو تعديل البيانات الرئيسية دون اتصال.',
+    'This operation requires a live server connection. Master-data changes cannot be queued offline.'
+  );
+  const { error } = await (await from(table)).delete().eq('id', id);
+  if (error) throw error;
+  await pullAll({ silent: true }).catch(() => {});
+  return true;
 }
 
 export async function upsertSetting(key, value, description = '') {
+  requireLiveConnection(
+    'تعديل إعدادات النظام يتطلب اتصالًا مباشرًا بالخادم.',
+    'System settings require a live server connection.'
+  );
   const row = { key, value: String(value), description, updated_at: new Date().toISOString() };
-  if (!navigator.onLine) {
-    queueMaster('update', 'system_settings', key, row);
-    return row;
-  }
-  try {
-    const { error } = await (await from('system_settings')).upsert(row, { onConflict: 'key' });
-    if (error) throw error;
-    const list = store.get('system_settings');
-    const i = list.findIndex(x => x.key === key);
-    if (i >= 0) list[i] = { ...list[i], ...row }; else list.push(row);
-    persist(true);
-    return row;
-  } catch (e) {
-    if (isNetworkFailure(e)) {
-      queueMaster('update', 'system_settings', key, row);
-      return row;
-    }
-    throw e;
-  }
+  const { error } = await (await from('system_settings')).upsert(row, { onConflict: 'key' });
+  if (error) throw error;
+  const list = store.get('system_settings');
+  const i = list.findIndex(x => x.key === key);
+  if (i >= 0) list[i] = { ...list[i], ...row }; else list.push(row);
+  persist(true);
+  return row;
 }
 
 export function setting(key, fallback = null) {
@@ -856,12 +762,12 @@ export async function flushOutbox() {
 
 export function queueSnapshot() {
   const out = [];
-  for (const x of masterQueue()) {
-    // Hide ops already reflected & synced lazily; only pending/error shown.
+  for (const x of quarantineLegacyMasterQueue()) {
     out.push({
-      id: x.operation_id, source: 'master', table: x.table, operation: x.kind,
-      status: x.status || 'PENDING', attempts: x.attempts || 0,
-      error: x.last_error || '', time: x.created_at || '', record: x.id
+      id: x.operation_id, source: 'blocked_master', table: x.table || 'legacy master data',
+      operation: x.kind || 'unknown', status: 'CONFLICT', attempts: x.attempts || 0,
+      error: x.last_error || 'Blocked by offline policy; re-enter the change while online.',
+      time: x.created_at || x.policy_blocked_at || '', record: x.id || ''
     });
   }
   for (const x of outbox()) {
@@ -898,7 +804,7 @@ export async function syncAll() {
     const liveSession = await ensureOnlineSession();
     if (!liveSession?.id) throw new Error(signInOnlineMessage());
 
-    const master = await flushMasterQueue();
+    quarantineLegacyMasterQueue();
     const transactions = await flushOutbox();
     const stocktakeCounts = await flushStocktakeCountQueue();
 
@@ -917,10 +823,10 @@ export async function syncAll() {
 
     // Nothing was written and the server could not be read: report the real
     // failure instead of pretending the app is synchronised.
-    if (!master && !transactions && !stocktakeCounts && !q.length && refreshError) throw refreshError;
+    if (!transactions && !stocktakeCounts && !q.length && refreshError) throw refreshError;
 
     return {
-      master, transactions, stocktakeCounts, remaining: q.length, pending, errors, conflicts,
+      transactions, stocktakeCounts, remaining: q.length, pending, errors, conflicts,
       refreshError: refreshError ? String(refreshError?.message || refreshError) : null
     };
   })();
