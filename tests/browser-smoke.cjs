@@ -138,8 +138,14 @@ const fs = require('fs');
         }
       });
       let pullFailedAsExpected = false;
+      const originalConsoleError = console.error;
+      console.error = (...args) => {
+        if (String(args[0] || '').includes('[store] pull failed')) return;
+        originalConsoleError.apply(console, args);
+      };
       try { await pullAll({ silent: true }); }
       catch (error) { pullFailedAsExpected = /warehouses: network request failed/i.test(error.message); }
+      finally { console.error = originalConsoleError; }
       const lineAfterFailedPull = store.data.stocktake_lines.find(x =>
         x.id === '44444444-4444-4444-8444-444444444444'
       );
