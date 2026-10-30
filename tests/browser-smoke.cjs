@@ -36,14 +36,14 @@ const fs = require('fs');
       const settingsPage = window.OW?.pages?.settings;
       if (typeof settingsPage?.render !== 'function') return {};
       const result = {};
-      for (const tab of ['general', 'users', 'roles', 'units', 'categories', 'import', 'data']) {
+      for (const tab of ['general', 'users', 'roles', 'authorization', 'units', 'categories', 'import', 'data']) {
         window.OW.wms.settingsTab(tab);
         result[tab] = typeof settingsPage.render() === 'string';
       }
       window.OW.wms.settingsTab('general');
       return result;
     });
-    if (Object.keys(settingsTabChecks).length !== 7 || Object.values(settingsTabChecks).some(value => value !== true)) {
+    if (Object.keys(settingsTabChecks).length !== 8 || Object.values(settingsTabChecks).some(value => value !== true)) {
       throw new Error('Settings tab render checks failed: ' + JSON.stringify(settingsTabChecks));
     }
 
