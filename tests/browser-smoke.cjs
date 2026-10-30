@@ -43,6 +43,8 @@ const fs = require('fs');
         id: userId, role: 'CLERK', offline: true,
         profile: { id: userId, assigned_warehouse_ids: [warehouseId], accessible_warehouse_ids: [warehouseId] }
       };
+      store.scopeConfigLoaded = true;
+      store.data.role_warehouse_scopes = [];
       store.data.profiles = [];
       store.data.items = [{ id: itemId, base_unit: 'PCS' }];
       store.data.item_unit_conversions = [{ item_id: itemId, unit_code: 'BOX', factor_to_base: 12 }];
