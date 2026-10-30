@@ -94,27 +94,11 @@ BEGIN
    ) unknown_keys;
    IF v_unknown_count>0 THEN RAISE EXCEPTION 'One or more permission keys are unknown'; END IF;
 
+   -- The AFTER trigger on role_permissions is the single synchronization
+   -- path into authorization_grants, including revocation history.
    DELETE FROM public.role_permissions rp WHERE rp.role_name=p_role_name;
    INSERT INTO public.role_permissions(role_name,permission_key)
    SELECT p_role_name,keys.k
-   FROM (SELECT DISTINCT u.k FROM pg_catalog.unnest(COALESCE(p_permission_keys,ARRAY[]::text[])) u(k)
-         WHERE u.k IS NOT NULL) keys;
-
-   UPDATE public.authorization_grants
-   SET revoked_at=now(),revoked_by=v_actor_id,
-       revocation_reason='Replaced through the role permission matrix'
-   WHERE subject_type='ROLE' AND role_name=p_role_name AND effect='ALLOW'
-     AND revoked_at IS NULL
-     AND grant_reason IN (
-       'Imported from existing explicit role_permissions during authorization engine rollout',
-       'Synchronized from role permission matrix'
-     );
-
-   INSERT INTO public.authorization_grants
-     (subject_type,role_name,permission_key,effect,scope_type,conditions,
-      valid_from,granted_by,grant_reason)
-   SELECT 'ROLE',p_role_name,keys.k,'ALLOW','ALL','{}'::jsonb,
-          now(),v_actor_id,'Synchronized from role permission matrix'
    FROM (SELECT DISTINCT u.k FROM pg_catalog.unnest(COALESCE(p_permission_keys,ARRAY[]::text[])) u(k)
          WHERE u.k IS NOT NULL) keys;
  END;
@@ -128,6 +112,11 @@ BEGIN
    '      RAISE EXCEPTION ''Per-user permissions must be created as scoped authorization grants'' USING ERRCODE=''42501'';' || E'\n' ||
    '    END IF;');
  IF n=d THEN RAISE EXCEPTION 'admin_update_profile custom permission rejection anchor not found'; END IF;
+ EXECUTE n;
+
+ SELECT pg_get_functiondef('public.admin_save_role_access_config(text,text[],text,uuid[])'::regprocedure) INTO d;
+ n:=replace(d,'''SUPER_ADMIN'',''ADMIN'',''MANAGER'',''WAREHOUSE_MANAGER'',','''ADMIN'',''MANAGER'',''WAREHOUSE_MANAGER'',');
+ IF n=d THEN RAISE EXCEPTION 'role access SUPER_ADMIN exclusion anchor not found'; END IF;
  EXECUTE n;
 
  EXECUTE $replace$
