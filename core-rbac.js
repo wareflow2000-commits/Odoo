@@ -73,9 +73,19 @@ export function canAccessWarehouse(warehouseId) {
 }
 
 export function canManageSettings() {
-  // Viewing the settings page is not equivalent to permission to mutate
-  // users, roles, or system configuration.
+  // Page access is separate from the narrower database-backed admin actions.
   return isAdmin() || can('action:settings:manage');
+}
+
+// Match the current database contract: system_settings and units mutations
+// are guarded by current_user_is_manager() (SUPER_ADMIN / MANAGER only).
+export function canManageSystemSettings() {
+  return ['SUPER_ADMIN', 'MANAGER'].includes(role());
+}
+
+// Profile and role-permission RPCs currently require SUPER_ADMIN explicitly.
+export function canAdministerProfiles() {
+  return role() === 'SUPER_ADMIN';
 }
 
 export function canViewSystemQty() {
