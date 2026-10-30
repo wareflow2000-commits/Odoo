@@ -20,7 +20,7 @@ import {
   warehouseOptions, itemOptions, unitOptions
 } from './core-store.js';
 import {
-  canApproveTransactions, isElevated, can, role, canAccessWarehouse
+  canApproveTransactions, canDatabasePermission, role, canAccessWarehouse
 } from './core-rbac.js';
 import {
   fmtDateTime, fmtNum, txLabel, statusLabel, todayISO
@@ -163,8 +163,8 @@ function render() {
       + card('', empty(tx('لا تملك صلاحية عرض السندات', 'You do not have permission to view vouchers')));
   }
   const canNew = ['GRN', 'ISSUE', 'ADJUSTMENT_IN', 'ADJUSTMENT_OUT'].some(canCreateType);
-  const canCustomerReturn = isElevated() || can('action:transaction:grn:create');
-  const canSupplierReturn = isElevated() || can('action:transaction:issue:create');
+  const canCustomerReturn = canDatabasePermission('action:transaction:grn:create');
+  const canSupplierReturn = canDatabasePermission('action:transaction:issue:create');
   const actions = `${canNew ? btn(`<i class="fa-solid fa-plus"></i> ${tx('سند جديد', 'New voucher')}`, 'onclick="OW.wms.newTx()"', 'primary') : ''}
     ${canCustomerReturn ? btn(`<i class="fa-solid fa-rotate-left"></i> ${tx('مرتجع من عميل', 'Customer return')}`, 'onclick="OW.wms.openReturn(\'RETURN_FROM_CUSTOMER\')"', 'secondary') : ''}
     ${canCustomerReturn ? btn(`<i class="fa-solid fa-arrow-rotate-left"></i> ${tx('مرتجع من الاستخدام', 'Return from usage')}`, 'onclick="OW.wms.openReturn(\'RETURN_FROM_USAGE\')"', 'secondary') : ''}
@@ -273,9 +273,16 @@ function accessibleWarehouseOptions() {
 
 function canCreateType(type) {
   const t = String(type || '').toUpperCase();
-  if (t === 'GRN' || t.startsWith('RETURN_FROM')) return isElevated() || can('action:transaction:grn:create');
-  if (t === 'ISSUE' || t === 'RETURN_TO_SUPPLIER') return isElevated() || can('action:transaction:issue:create');
-  return isElevated() || can('action:transaction:adjustment:create');
+  if (t === 'GRN' || t === 'RETURN_FROM_USAGE' || t === 'RETURN_FROM_CUSTOMER') {
+    return canDatabasePermission('action:transaction:grn:create');
+  }
+  if (t === 'ISSUE' || t === 'RETURN_TO_SUPPLIER') {
+    return canDatabasePermission('action:transaction:issue:create');
+  }
+  if (t === 'ADJUSTMENT_IN' || t === 'ADJUSTMENT_OUT') {
+    return canDatabasePermission('action:transaction:adjustment:create');
+  }
+  return false;
 }
 
 function availableLabel(itemId, shelfId, batchNo) {
@@ -958,7 +965,7 @@ function exportTxs() {
 function openReturn(type) {
   const returnType = String(type || 'RETURN_FROM_CUSTOMER').toUpperCase();
   const permission = returnType === 'RETURN_TO_SUPPLIER' ? 'action:transaction:issue:create' : 'action:transaction:grn:create';
-  if (!(isElevated() || can(permission))) return toast(tx('لا تملك صلاحية إنشاء هذا المرتجع.', 'You do not have permission to create this return.'), 'error');
+  if (!canDatabasePermission(permission)) return toast(tx('لا تملك صلاحية إنشاء هذا المرتجع.', 'You do not have permission to create this return.'), 'error');
   const warehouses = accessibleWarehouseOptions();
   const warehouseId = warehouses[0]?.value || '';
   const shelves = shelfOptions({ warehouseId });
