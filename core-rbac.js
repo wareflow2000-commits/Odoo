@@ -136,41 +136,44 @@ export function canTransfer() {
   ].some(hasAnyEffectiveCachedGrant);
 }
 
-export const canCreateTransfer = (warehouseId = null) => warehouseId
-  ? canDatabasePermission('action:stock_transfer:create', {
-      resource_type: 'stock_transfer_order', warehouse_id: warehouseId,
-      owner_id: currentUser()?.id
-    })
-  : hasAnyEffectiveCachedGrant('action:stock_transfer:create');
-export const canReceiveTransfer = (warehouseId = null, transferId = null) => warehouseId
-  ? canDatabasePermission('action:stock_transfer:receive', {
-      resource_type: 'stock_transfer', resource_id: transferId,
-      warehouse_id: warehouseId, owner_id: currentUser()?.id
-    })
+const transferContext = (transfer, warehouseId, operation = null) => transfer ? ({
+  resource_type: 'stock_transfer',
+  resource_id: transfer.id,
+  warehouse_id: warehouseId,
+  status: transfer.status,
+  source_warehouse_id: transfer.source_warehouse_id,
+  destination_warehouse_id: transfer.destination_warehouse_id,
+  ...(operation ? { operation } : {}),
+  ...(transfer.return_review_status ? { return_review_status: transfer.return_review_status } : {})
+}) : null;
+
+export const canCreateTransfer = (sourceWarehouseId = null, destinationWarehouseId = null, orderId = null) =>
+  sourceWarehouseId && destinationWarehouseId
+    ? canDatabasePermission('action:stock_transfer:create', {
+        resource_type: 'stock_transfer_order', resource_id: orderId,
+        warehouse_id: sourceWarehouseId, owner_id: currentUser()?.id,
+        source_warehouse_id: sourceWarehouseId, destination_warehouse_id: destinationWarehouseId
+      }) && canDatabasePermission('action:stock_transfer:create', {
+        resource_type: 'stock_transfer_order', resource_id: orderId,
+        warehouse_id: destinationWarehouseId, owner_id: currentUser()?.id,
+        source_warehouse_id: sourceWarehouseId, destination_warehouse_id: destinationWarehouseId
+      })
+    : hasAnyEffectiveCachedGrant('action:stock_transfer:create');
+
+export const canReceiveTransfer = transfer => transfer
+  ? canDatabasePermission('action:stock_transfer:receive', transferContext(transfer, transfer.destination_warehouse_id))
   : hasAnyEffectiveCachedGrant('action:stock_transfer:receive');
-export const canRejectTransferReceipt = (warehouseId = null, transferId = null) => warehouseId
-  ? canDatabasePermission('action:stock_transfer:reject_receipt', {
-      resource_type: 'stock_transfer', resource_id: transferId,
-      warehouse_id: warehouseId, owner_id: currentUser()?.id
-    })
+export const canRejectTransferReceipt = transfer => transfer
+  ? canDatabasePermission('action:stock_transfer:reject_receipt', transferContext(transfer, transfer.destination_warehouse_id))
   : hasAnyEffectiveCachedGrant('action:stock_transfer:reject_receipt');
-export const canCreateTransferReturn = (warehouseId = null, transferId = null) => warehouseId
-  ? canDatabasePermission('action:stock_transfer:return:create', {
-      resource_type: 'stock_transfer', resource_id: transferId,
-      warehouse_id: warehouseId, owner_id: currentUser()?.id
-    })
+export const canCreateTransferReturn = transfer => transfer
+  ? canDatabasePermission('action:stock_transfer:return:create', transferContext(transfer, transfer.destination_warehouse_id))
   : hasAnyEffectiveCachedGrant('action:stock_transfer:return:create');
-export const canReviewTransferReturn = (warehouseId = null, transferId = null) => warehouseId
-  ? canDatabasePermission('action:stock_transfer:return:review', {
-      resource_type: 'stock_transfer', resource_id: transferId,
-      warehouse_id: warehouseId, owner_id: currentUser()?.id
-    })
+export const canReviewTransferReturn = transfer => transfer
+  ? canDatabasePermission('action:stock_transfer:return:review', transferContext(transfer, transfer.source_warehouse_id))
   : hasAnyEffectiveCachedGrant('action:stock_transfer:return:review');
-export const canConfirmTransferReturn = (warehouseId = null, transferId = null) => warehouseId
-  ? canDatabasePermission('action:stock_transfer:return:receive', {
-      resource_type: 'stock_transfer', resource_id: transferId,
-      warehouse_id: warehouseId, owner_id: currentUser()?.id
-    })
+export const canConfirmTransferReturn = transfer => transfer
+  ? canDatabasePermission('action:stock_transfer:return:receive', transferContext(transfer, transfer.source_warehouse_id))
   : hasAnyEffectiveCachedGrant('action:stock_transfer:return:receive');
 
 export function canAccessPage(page) {
