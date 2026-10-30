@@ -907,7 +907,8 @@ export function shouldAutoApprove(transactionType) {
   const session = window.__session;
   if (!session?.id) return false;
   const actorRole = String(session.role || '').toUpperCase();
-  const requireApproval = setting('REQUIRE_APPROVAL', true) !== false;
+  const rawRequireApproval = setting('REQUIRE_APPROVAL', true);
+  const requireApproval = !(rawRequireApproval === false || String(rawRequireApproval).trim().toUpperCase() === 'FALSE');
 
   if (!requireApproval && ['SUPER_ADMIN', 'MANAGER', 'ADMIN'].includes(actorRole)) {
     return true;
