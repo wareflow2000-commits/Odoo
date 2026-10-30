@@ -451,8 +451,8 @@ const fs = require('fs');
         canCreateTransactionType, canViewSystemQty, canApproveTransactions
       } = await import('/core-rbac.js');
       const originalSession = window.__session;
-      const originalRolePermissions = store.data.role_permissions;
-      store.data.role_permissions = [];
+      const originalAuthorizationPermissions = store.authorizationPermissions;
+      store.authorizationPermissions = [];
       const roleContract = {};
       for (const role of ['SUPER_ADMIN', 'MANAGER', 'ADMIN', 'WAREHOUSE_MANAGER', 'CLERK']) {
         window.__session = { id: 'role-contract-test', role, profile: { role } };
@@ -479,20 +479,27 @@ const fs = require('fs');
         profile: { role: 'WAREHOUSE_MANAGER', custom_permissions: [
           'action:stocktake:start', 'action:transaction:issue:create',
           'page:inventory:access', 'action:stocktake:view_system_qty',
-          'action:transaction:approve'
+          'action:transaction:approve', 'action:settings:manage'
         ] }
       };
+      store.authorizationPermissions = [
+        'action:stocktake:start', 'action:transaction:issue:create',
+        'page:inventory:access', 'action:stocktake:view_system_qty',
+        'action:transaction:approve', 'action:settings:manage'
+      ];
       const warehouseManagerExplicitGrant = canDatabasePermission('action:stocktake:start')
         && can('action:transaction:issue:create') && canAccessPage('inventory')
-        && canCreateTransactionType('ISSUE') && canViewSystemQty() && canApproveTransactions();
+        && canCreateTransactionType('ISSUE') && canViewSystemQty() && canApproveTransactions()
+        && canManageSystemSettings();
       window.__session = {
         id: 'role-contract-wildcard',
         role: 'WAREHOUSE_MANAGER',
         profile: { role: 'WAREHOUSE_MANAGER', custom_permissions: ['*'] }
       };
+      store.authorizationPermissions = ['*'];
       const wildcardDoesNotBypassDatabase = !can('action:transaction:issue:create')
         && !canAccessPage('inventory');
-      store.data.role_permissions = originalRolePermissions;
+      store.authorizationPermissions = originalAuthorizationPermissions;
       window.__session = originalSession;
       const nonSuperAdminRoles = Object.keys(roleContract).filter(name => name !== 'SUPER_ADMIN');
       const permissionRoleContract = roleContract.SUPER_ADMIN.profiles
