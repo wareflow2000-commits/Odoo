@@ -980,9 +980,10 @@ function openReturn(type) {
   const warehouses = accessibleWarehouseOptions();
   const warehouseId = warehouses.find(option => canDatabasePermission(permission, {
     resource_type: 'transaction', warehouse_id: option.value,
-    owner_id: window.__session?.id, transaction_type: returnType, offline: false
+    owner_id: window.__session?.id, transaction_type: returnType, return_request: true
   }))?.value || '';
   if (!warehouseId) return toast(tx('لا تملك صلاحية إنشاء هذا المرتجع في أي من مستودعاتك.', 'You do not have permission to create this return in any of your accessible warehouses.'), 'error');
+  const returnId = uid();
   const shelves = shelfOptions({ warehouseId });
   const title = returnType === 'RETURN_TO_SUPPLIER'
     ? tx('مرتجع إلى مورد', 'Return to supplier')
@@ -1086,7 +1087,7 @@ function openReturn(type) {
         if (!data.warehouse_id) problems.push(tx('اختر المستودع.', 'Select a warehouse.'));
         if (data.warehouse_id && !canDatabasePermission(permission, {
           resource_type: 'transaction', warehouse_id: data.warehouse_id,
-          owner_id: window.__session?.id, transaction_type: returnType, offline: false
+          owner_id: window.__session?.id, transaction_type: returnType, return_request: true
         })) problems.push(tx('لا تملك تفويض إنشاء هذا المرتجع في المستودع المحدد.', 'You do not have a create grant for this return in the selected warehouse.'));
         if (!data.item_id) problems.push(tx('اختر الصنف.', 'Select an item.'));
         if (!data.shelf_id || !shelfRow || shelfRow.warehouse_id !== data.warehouse_id) problems.push(tx('اختر رفاً يتبع المستودع.', 'Select a shelf in that warehouse.'));
@@ -1104,6 +1105,7 @@ function openReturn(type) {
         createBtn.disabled = true;
         try {
           await createStockReturnRequest({
+            returnId,
             returnType,
             referenceNo: reference,
             itemId: data.item_id,
