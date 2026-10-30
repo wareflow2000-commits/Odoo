@@ -335,6 +335,7 @@ const fs = require('fs');
     // Auto-approval UI pre-check must defer to the server's explicit grant engine.
     const autoApprovalChecks = await page.evaluate(async () => {
       const { shouldAutoApprove, store } = await import('/core-store.js');
+      const { canApproveTransactions } = await import('/core-rbac.js');
       const originalSession = window.__session;
       const originalGrantRows = store.authorizationGrantRows;
       const originalGrantRowsUserId = store.authorizationGrantRowsUserId;
@@ -423,6 +424,35 @@ const fs = require('fs');
       store.authorizationGrantRowsUserId = userId;
       window.__session = { id: userId, role: 'CLERK', profile: { id: userId, can_approve_without_workflow: true } };
       checks.explicitDenyOverridesAutoApproval = await shouldAutoApprove('ISSUE', warehouseId, '77777777-7777-4777-8777-777777777777') === false;
+
+      const ownVoucher = {
+        id: '77777777-7777-4777-8777-777777777777',
+        created_by: userId, warehouse_id: warehouseId,
+        status: 'PENDING_APPROVAL', transaction_type: 'ISSUE'
+      };
+      const makeGrant = (permission_key, effect = 'ALLOW') => ({
+        id: 'approval-visibility-' + permission_key + '-' + effect,
+        subject_type: 'USER', permission_key, effect,
+        resource_type: 'transaction', resource_id: null,
+        warehouse_id: warehouseId, scope_type: 'WAREHOUSE', conditions: {},
+        valid_from: new Date(Date.now() - 60000).toISOString(), valid_until: null
+      });
+      store.authorizationGrantRows = [makeGrant(issue), makeGrant(auto)];
+      window.__session = {
+        id: userId, role: 'CLERK',
+        profile: { id: userId, can_approve_without_workflow: false }
+      };
+      checks.ownVoucherHiddenWithoutSelfApprovalFlag = canApproveTransactions(ownVoucher) === false;
+      window.__session.profile.can_approve_without_workflow = true;
+      checks.ownVoucherVisibleWithExplicitSelfApproval = canApproveTransactions(ownVoucher) === true;
+      store.authorizationGrantRows = [makeGrant(issue)];
+      checks.ownVoucherHiddenWithoutAutoApprovalGrant = canApproveTransactions(ownVoucher) === false;
+      store.authorizationGrantRows = [makeGrant(issue), makeGrant(auto, 'DENY')];
+      checks.ownVoucherDeniedByScopedDeny = canApproveTransactions(ownVoucher) === false;
+      store.authorizationGrantRows = [makeGrant('action:transaction:approve')];
+      const otherVoucher = { ...ownVoucher, created_by: '66666666-6666-4666-8666-666666666666' };
+      checks.independentApproverKeepsNormalApprovalGrant = canApproveTransactions(otherVoucher) === true;
+
       store.authorizationGrantRows = originalGrantRows;
       store.authorizationGrantRowsUserId = originalGrantRowsUserId;
       window.__session = originalSession;
