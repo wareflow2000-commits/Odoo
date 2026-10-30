@@ -269,7 +269,7 @@ export function loadLocal() {
     // The overlay itself verifies user, session and warehouse identity.
     applyStocktakeCountOverlay();
     store.loaded = true;
-    if (!Array.isArray(parsed.__authorization_permissions)) persist(true);
+    if (!Array.isArray(parsed.__authorization_grants)) persist(true);
     return true;
   } catch (e) {
     for (const t of TABLES) store.data[t] = [];
