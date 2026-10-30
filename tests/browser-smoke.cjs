@@ -186,8 +186,116 @@ const fs = require('fs');
     const refreshFailures = Object.entries(refreshChecks).filter(([key, value]) => key !== 'pullFailureDiagnostics' && value !== true);
     if (refreshFailures.length) throw new Error('Refresh/account-isolation checks failed: ' + JSON.stringify(refreshChecks));
 
+
+    // End-to-end stocktake outbox test with a mocked Supabase client only.
+    const syncChecks = await page.evaluate(async () => {
+      const { store, saveStocktakeCount, syncAll, queueSnapshot } = await import('/core-store.js');
+      const userId = '11111111-1111-4111-8111-111111111111';
+      const warehouseId = '22222222-2222-4222-8222-222222222222';
+      const sessionId = '33333333-3333-4333-8333-333333333333';
+      const lineId = '44444444-4444-4444-8444-444444444444';
+      const itemId = '55555555-5555-4555-8555-555555555555';
+      window.__session = {
+        id: userId, role: 'CLERK', offline: true,
+        profile: { id: userId, assigned_warehouse_ids: [warehouseId], accessible_warehouse_ids: [warehouseId] }
+      };
+      Object.defineProperty(navigator, 'onLine', { configurable: true, value: false });
+      for (const key of Object.keys(localStorage)) {
+        if (key.startsWith('orshap_stocktake_count_queue_v1:')) localStorage.removeItem(key);
+      }
+      store.loading = false;
+      store.loaded = true;
+      store.data.warehouses = [{ id: warehouseId, name: 'Authorized test warehouse' }];
+      store.data.items = [{ id: itemId, base_unit: 'PCS' }];
+      store.data.item_unit_conversions = [{ item_id: itemId, unit_code: 'BOX', factor_to_base: 12 }];
+      store.data.stocktake_sessions = [{
+        id: sessionId, warehouse_id: warehouseId, created_by: userId,
+        status: 'IN_PROGRESS', review_status: 'DRAFT'
+      }];
+      store.data.stocktake_lines = [{
+        id: lineId, session_id: sessionId, item_id: itemId,
+        system_qty: 20, base_unit: 'PCS', counted_qty: null
+      }];
+      await saveStocktakeCount(lineId, 2, 'BOX');
+
+      let currentFactor = 10;
+      let countRpcCalls = 0;
+      const rpcArgs = [];
+      window.orshapSupabaseReady = Promise.resolve({
+        from(table) {
+          return {
+            select() {
+              const result = table === 'item_unit_conversions'
+                ? { data: [{ item_id: itemId, unit_code: 'BOX', factor_to_base: currentFactor }], error: null }
+                : { data: store.data[table] || [], error: null };
+              return {
+                in: async () => result,
+                then: (resolve, reject) => Promise.resolve(result).then(resolve, reject)
+              };
+            }
+          };
+        },
+        async rpc(name, args) {
+          if (name === 'list_stocktake_lines_secure') return { data: store.data.stocktake_lines, error: null };
+          if (name === 'save_stocktake_count_v3') {
+            countRpcCalls++;
+            rpcArgs.push(args);
+            const line = store.data.stocktake_lines.find(x => x.id === args.p_line_id);
+            if (line) {
+              line.counted_qty = Number(args.p_entered_quantity) * Number(args.p_expected_factor);
+              line.entered_quantity = Number(args.p_entered_quantity);
+              line.entered_unit = args.p_entered_unit;
+              line.conversion_factor = Number(args.p_expected_factor);
+            }
+            return { data: { counted_qty: line?.counted_qty }, error: null };
+          }
+          return { data: null, error: null };
+        }
+      });
+
+      Object.defineProperty(navigator, 'onLine', { configurable: true, value: true });
+      window.__session.offline = false;
+      const conflictResult = await syncAll();
+      const queueAfterConflict = JSON.parse(localStorage.getItem('orshap_stocktake_count_queue_v1:' + userId) || '[]');
+      const factorConflict = conflictResult.conflicts === 1
+        && queueAfterConflict.length === 1
+        && queueAfterConflict[0].status === 'CONFLICT'
+        && countRpcCalls === 0;
+
+      currentFactor = 10;
+      store.data.item_unit_conversions = [{ item_id: itemId, unit_code: 'BOX', factor_to_base: 10 }];
+      window.__session.offline = true;
+      Object.defineProperty(navigator, 'onLine', { configurable: true, value: false });
+      await saveStocktakeCount(lineId, 2, 'BOX');
+      const reenteredQueue = JSON.parse(localStorage.getItem('orshap_stocktake_count_queue_v1:' + userId) || '[]');
+      const reenteredWithCorrectFactor = reenteredQueue.length === 1
+        && reenteredQueue[0].status === 'PENDING'
+        && reenteredQueue[0].conversion_factor === 10
+        && reenteredQueue[0].base_quantity === 20;
+
+      Object.defineProperty(navigator, 'onLine', { configurable: true, value: true });
+      window.__session.offline = false;
+      const firstSync = await syncAll();
+      const queueAfterSync = JSON.parse(localStorage.getItem('orshap_stocktake_count_queue_v1:' + userId) || '[]');
+      const firstSyncOnce = firstSync.stocktakeCounts === 1
+        && countRpcCalls === 1
+        && rpcArgs[0]?.p_expected_factor === 10
+        && queueAfterSync.length === 0
+        && store.data.stocktake_lines.find(x => x.id === lineId)?.counted_qty === 20;
+      const secondSync = await syncAll();
+      const secondSyncIdempotent = secondSync.stocktakeCounts === 0 && countRpcCalls === 1
+        && queueSnapshot().every(x => x.source !== 'stocktake');
+
+      return { factorConflict, reenteredWithCorrectFactor, firstSyncOnce, secondSyncIdempotent,
+        countRpcCalls, firstSyncCount: firstSync.stocktakeCounts, secondSyncCount: secondSync.stocktakeCounts };
+    });
+    const syncFailures = Object.entries(syncChecks).filter(([key, value]) =>
+      !['countRpcCalls', 'firstSyncCount', 'secondSyncCount'].includes(key) && value !== true
+    );
+    if (syncFailures.length) throw new Error('Stocktake sync checks failed: ' + JSON.stringify(syncChecks));
+
     if (errors.length) throw new Error('Browser errors:\\n' + errors.join('\\n'));
-    console.log('PASS: login desktop/mobile smoke; no browser errors; offline policy allows ISSUE only; single-warehouse scope enforced; multi-warehouse offline denied; stocktake count queued locally with BOX x12 = 24 PCS and bound to its creator; foreign-user cached snapshot rejected.');
+    console.log('PASS: login desktop/mobile smoke; no browser errors; offline policy allows ISSUE only; single-warehouse scope enforced; multi-warehouse offline denied; stocktake count queued locally with BOX x12 = 24 PCS and bound to its creator; refresh/fetch-failure cache preservation; conversion conflict; corrected-factor sync exactly once; foreign-user cached snapshot rejected.');
   } catch (error) {
     fs.mkdirSync('test-results', { recursive: true });
     await page.screenshot({ path: 'test-results/failure.png', fullPage: true }).catch(() => {});
