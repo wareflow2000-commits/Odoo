@@ -900,19 +900,12 @@ export const AUTO_APPROVE_CREATE_PERMISSION = Object.freeze({
 });
 
 // Mirrors approve_transaction + guard_transaction_status_change.
-// A creator may auto-approve only through the explicit per-user flag and
-// both required grants, unless global approval is disabled for an elevated
-// database role. Unknown or unloaded authorization inputs fail closed.
-export function shouldAutoApprove(transactionType) {
+// Self-approval is never inferred from role or the global workflow setting.
+// The server evaluates both grants (including scoped denies); this client
+// pre-check is only an optimization and fails closed on any RPC failure.
+export async function shouldAutoApprove(transactionType) {
   const session = window.__session;
   if (!session?.id) return false;
-  const actorRole = String(session.role || '').toUpperCase();
-  const rawRequireApproval = setting('REQUIRE_APPROVAL', true);
-  const requireApproval = !(rawRequireApproval === false || String(rawRequireApproval).trim().toUpperCase() === 'FALSE');
-
-  if (!requireApproval && ['SUPER_ADMIN', 'MANAGER', 'ADMIN'].includes(actorRole)) {
-    return true;
-  }
 
   const profile = session.profile?.id === session.id
     ? session.profile
@@ -922,13 +915,16 @@ export function shouldAutoApprove(transactionType) {
   const createPermission = AUTO_APPROVE_CREATE_PERMISSION[String(transactionType || '').toUpperCase()];
   if (!createPermission) return false;
 
-  const roleGrants = store.get('role_permissions')
-    .filter(row => String(row.role_name || '').toUpperCase() === actorRole)
-    .map(row => row.permission_key);
-  const customGrants = Array.isArray(profile.custom_permissions) ? profile.custom_permissions : [];
-  const hasGrant = key => roleGrants.includes(key) || customGrants.includes(key);
-
-  return hasGrant('action:transaction:auto_approve') && hasGrant(createPermission);
+  try {
+    const [hasAutoApprove, hasCreate] = await Promise.all([
+      rpc('current_user_has_permission', { p_permission: 'action:transaction:auto_approve' }),
+      rpc('current_user_has_permission', { p_permission: createPermission })
+    ]);
+    return hasAutoApprove === true && hasCreate === true;
+  } catch (error) {
+    console.warn('[store] auto-approval authorization check failed', error);
+    return false;
+  }
 }
 
 export async function createTransactionBundle({
@@ -1054,7 +1050,7 @@ export async function createTransactionBundle({
   }
 
   let approved = false;
-  if (shouldAutoApprove(normalizedType)) {
+  if (await shouldAutoApprove(normalizedType)) {
     try { await rpc('approve_transaction', { p_transaction_id: tx.id }); approved = true; }
     catch (e) { console.warn('[store] auto-approval failed', e); }
   }
