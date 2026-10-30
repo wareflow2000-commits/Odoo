@@ -400,7 +400,7 @@ const fs = require('fs');
               line.entered_unit = args.p_entered_unit;
               line.conversion_factor = Number(args.p_expected_factor);
             }
-            return { data: { counted_qty: line?.counted_qty }, error: null };
+            return { data: { counted_qty: line?.counted_qty, idempotent: false }, error: null };
           }
           return { data: null, error: null };
         }
@@ -426,6 +426,7 @@ const fs = require('fs');
         && reenteredQueue[0].status === 'PENDING'
         && reenteredQueue[0].conversion_factor === 10
         && reenteredQueue[0].base_quantity === 20;
+      const operationIdBeforeSync = reenteredQueue[0]?.operation_id;
 
       Object.defineProperty(navigator, 'onLine', { configurable: true, value: true });
       window.__session.offline = false;
@@ -434,6 +435,7 @@ const fs = require('fs');
       const firstSyncOnce = firstSync.stocktakeCounts === 1
         && countRpcCalls === 1
         && rpcArgs[0]?.p_expected_factor === 10
+        && rpcArgs[0]?.p_operation_id === operationIdBeforeSync
         && queueAfterSync.length === 0
         && store.data.stocktake_lines.find(x => x.id === lineId)?.counted_qty === 20;
       const secondSync = await syncAll();
