@@ -177,31 +177,32 @@ $order_patch$;
 DO $status_patch$
 DECLARE
   d text;
-  anchor text := 'BEGIN' || E'\n' ||
-    '  -- A transfer receipt is a system-generated voucher authorized by the';
-  replacement text := 'BEGIN' || E'\n' ||
-    '  -- Dispatch source/destination vouchers are approved only inside the' || E'\n' ||
-    '  -- internal order writer after the v3 wrapper authorized both warehouses.' || E'\n' ||
-    '  IF OLD.status=''PENDING_APPROVAL'' AND NEW.status=''APPROVED''' || E'\n' ||
-    '     AND v_user_id IS NOT NULL AND NEW.created_by=v_user_id' || E'\n' ||
-    '     AND NEW.transaction_type IN (''ADJUSTMENT_OUT'',''ADJUSTMENT_IN'')' || E'\n' ||
-    '     AND EXISTS (' || E'\n' ||
-    '       SELECT 1 FROM public.wms_transfer_scope_context c' || E'\n' ||
-    '       WHERE c.transaction_id=txid_current() AND c.actor_id=v_user_id' || E'\n' ||
-    '         AND c.context_type=''DISPATCH_ORDER'' AND c.order_id IS NOT NULL' || E'\n' ||
-    '         AND left(NEW.reference_no,length(c.reference_no||''-L''))=c.reference_no||''-L''' || E'\n' ||
-    '         AND ((NEW.transaction_type=''ADJUSTMENT_OUT'' AND right(NEW.reference_no,4)=''-OUT''' || E'\n' ||
-    '               AND NEW.warehouse_id=c.source_warehouse_id)' || E'\n' ||
-    '           OR (NEW.transaction_type=''ADJUSTMENT_IN'' AND right(NEW.reference_no,3)=''-IN''' || E'\n' ||
-    '               AND NEW.warehouse_id=c.destination_warehouse_id))' || E'\n' ||
-    '         AND public.current_user_can_access_warehouse(NEW.warehouse_id)' || E'\n' ||
-    '         AND public.authorize_action(''action:stock_transfer:create'',''stock_transfer_order'',c.order_id,NEW.warehouse_id,' || E'\n' ||
-    '           jsonb_build_object(''owner_id'',v_user_id,''source_warehouse_id'',c.source_warehouse_id,' || E'\n' ||
-    '             ''destination_warehouse_id'',c.destination_warehouse_id),true)' || E'\n' ||
-    '     ) THEN' || E'\n' ||
-    '    RETURN NEW;' || E'\n' ||
-    '  END IF;' || E'\n' ||
-    '  -- A transfer receipt is a system-generated voucher authorized by the';
+  anchor text := '  IF NEW.status IS NOT DISTINCT FROM OLD.status THEN' || E'\\n' ||
+    '    RETURN NEW;' || E'\\n' ||
+    '  END IF;';
+  replacement text := anchor || E'\\n' ||
+    '  -- Dispatch source/destination vouchers are approved only inside the' || E'\\n' ||
+    '  -- internal order writer after the v3 wrapper authorized both warehouses.' || E'\\n' ||
+    '  IF OLD.status=''PENDING_APPROVAL'' AND NEW.status=''APPROVED''' || E'\\n' ||
+    '     AND v_user_id IS NOT NULL AND NEW.created_by=v_user_id' || E'\\n' ||
+    '     AND NEW.transaction_type IN (''ADJUSTMENT_OUT'',''ADJUSTMENT_IN'')' || E'\\n' ||
+    '     AND EXISTS (' || E'\\n' ||
+    '       SELECT 1 FROM public.wms_transfer_scope_context c' || E'\\n' ||
+    '       WHERE c.transaction_id=txid_current() AND c.actor_id=v_user_id' || E'\\n' ||
+    '         AND c.context_type=''DISPATCH_ORDER'' AND c.order_id IS NOT NULL' || E'\\n' ||
+    '         AND left(NEW.reference_no,length(c.reference_no||''-L''))=c.reference_no||''-L''' || E'\\n' ||
+    '         AND ((NEW.transaction_type=''ADJUSTMENT_OUT'' AND right(NEW.reference_no,4)=''-OUT''' || E'\\n' ||
+    '               AND NEW.warehouse_id=c.source_warehouse_id)' || E'\\n' ||
+    '           OR (NEW.transaction_type=''ADJUSTMENT_IN'' AND right(NEW.reference_no,3)=''-IN''' || E'\\n' ||
+    '               AND NEW.warehouse_id=c.destination_warehouse_id))' || E'\\n' ||
+    '         AND public.current_user_can_access_warehouse(NEW.warehouse_id)' || E'\\n' ||
+    '         AND public.authorize_action(''action:stock_transfer:create'',''stock_transfer_order'',c.order_id,NEW.warehouse_id,' || E'\\n' ||
+    '           jsonb_build_object(''owner_id'',v_user_id,''source_warehouse_id'',c.source_warehouse_id,' || E'\\n' ||
+    '             ''destination_warehouse_id'',c.destination_warehouse_id),true)' || E'\\n' ||
+    '     ) THEN' || E'\\n' ||
+    '    RETURN NEW;' || E'\\n' ||
+    '  END IF;' || E'\\n' ||
+    '  -- Existing creator self-approval guard follows this dispatch-only exception.';
 BEGIN
   SELECT pg_get_functiondef('public.guard_transaction_status_change()'::regprocedure) INTO d;
   IF position(replacement IN d)=0 THEN
