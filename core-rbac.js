@@ -2,7 +2,7 @@
 // OW — role based access control (UI gate only; RLS is authoritative)
 // ============================================================================
 import { currentUser } from './core-auth.js';
-import { store, ELEVATED_ROLES } from './core-store.js';
+import { store } from './core-store.js';
 
 export function role() { return String(currentUser()?.role || '').toUpperCase(); }
 export const isAdmin = () => role() === 'SUPER_ADMIN';
