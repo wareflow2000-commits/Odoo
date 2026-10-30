@@ -11,6 +11,8 @@ CREATE TABLE IF NOT EXISTS public.stocktake_count_sync_operations (
 );
 ALTER TABLE public.stocktake_count_sync_operations ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON TABLE public.stocktake_count_sync_operations FROM PUBLIC,anon,authenticated;
+COMMENT ON TABLE public.stocktake_count_sync_operations IS
+'Internal server-only idempotency ledger for offline stocktake count synchronization. RLS is enabled and client table privileges are revoked; access is through save_offline_stocktake_count_v2 only.';
 
 CREATE OR REPLACE FUNCTION public.save_offline_stocktake_count_v2(
  p_line_id uuid,p_entered_quantity numeric,p_entered_unit text,p_expected_factor numeric,p_operation_id text
