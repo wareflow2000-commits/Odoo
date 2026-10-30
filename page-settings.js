@@ -179,7 +179,9 @@ const FALLBACK_PERMISSIONS = [
   'action:stock_transfer:create', 'action:stock_transfer:view',
   'action:stocktake:start', 'action:stocktake:count', 'action:stocktake:submit',
   'action:stocktake:approve', 'action:stocktake:settle', 'action:stocktake:close',
-  'action:stocktake:view_system_qty', 'action:settings:manage'
+  'action:stocktake:view_system_qty', 'action:settings:manage',
+  'action:chat:manage', 'action:transaction:opening_balance:create',
+  'table:inventory_ledger:view', 'table:transaction_ledger:view', 'table:audit_logs:view'
 ];
 
 /* ── small helpers ───────────────────────────────────────────────────────── */
@@ -190,9 +192,8 @@ function canManageImportEntity(entity, action = 'create', existing = null, row =
   if (entity === 'warehouses') {
     if (action === 'create') {
       const assigned = window.__session?.profile?.assigned_warehouse_ids;
-      return ['SUPER_ADMIN', 'ADMIN'].includes(userRole())
-        && Array.isArray(assigned) && assigned.length === 0
-        && can('action:warehouse:manage');
+      return userRole() === 'SUPER_ADMIN'
+        || (Array.isArray(assigned) && assigned.length === 0 && can('action:warehouse:manage'));
     }
     return can('action:warehouse:manage')
       && (!existing || canAccessWarehouse(existing.id));
@@ -265,13 +266,13 @@ function render() {
       { value: 'import', label: tx('استيراد البيانات', 'Data import') },
       { value: 'data', label: tx('البيانات والنسخ', 'Data & backup') }
     ].map(t => ({ ...t, onclick: `OW.wms.settingsTab('${t.value}')` })), F.tab)}
-    ${F.tab === 'general' ? `${!canManageSystemSettings() ? alertBox(tx('تعديل أعلام النظام متاح للمسؤول الأعلى أو المدير فقط.', 'System flags are editable by SUPER_ADMIN / MANAGER only.'), 'warning') : ''}${renderGeneral(banned || !canManageSystemSettings())}`
+    ${F.tab === 'general' ? `${!canManageSystemSettings() ? alertBox(tx('تعديل أعلام النظام يتطلب منحة صريحة لصلاحية إدارة الإعدادات.', 'System settings require an explicit settings-management grant.'), 'warning') : ''}${renderGeneral(banned || !canManageSystemSettings())}`
       : F.tab === 'users' ? `${!canAdministerProfiles() ? alertBox(tx('إدارة ملفات المستخدمين متاحة للمسؤول الأعلى فقط.', 'Profile administration is restricted to SUPER_ADMIN. Database authorization remains authoritative.'), 'warning') : ''}${renderUsers(banned || !canAdministerProfiles())}`
       : F.tab === 'roles' ? `${!canAdministerProfiles() ? alertBox(tx('إدارة صلاحيات الأدوار متاحة للمسؤول الأعلى فقط.', 'Role-permission administration is restricted to SUPER_ADMIN.'), 'warning') : ''}${renderRoles(banned || !canAdministerProfiles())}`
       : F.tab === 'authorization' ? (canAdministerProfiles()
         ? renderAuthorization(banned)
         : alertBox(tx('إدارة التفويض المتقدم متاحة للمسؤول الأعلى فقط.', 'Advanced authorization administration is restricted to SUPER_ADMIN.'), 'warning'))
-      : F.tab === 'units' ? `${!canManageSystemSettings() ? alertBox(tx('إدارة الوحدات والتحويلات متاحة للمسؤول الأعلى أو المدير فقط.', 'Unit and conversion administration is restricted to SUPER_ADMIN / MANAGER.'), 'warning') : ''}${renderUnits(banned || !canManageSystemSettings())}`
+      : F.tab === 'units' ? `${!canManageSystemSettings() ? alertBox(tx('إدارة الوحدات والتحويلات تتطلب منحة صريحة لصلاحية إدارة الإعدادات.', 'Unit and conversion administration requires an explicit settings-management grant.'), 'warning') : ''}${renderUnits(banned || !canManageSystemSettings())}`
       : F.tab === 'categories' ? renderCategories()
       : F.tab === 'import' ? renderImport(banned)
       : renderData(banned)}
