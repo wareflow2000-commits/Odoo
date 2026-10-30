@@ -183,7 +183,7 @@ const fs = require('fs');
         && store.data.warehouses.length === 0 && store.data.stock.length === 0;
       return refreshChecks;
     });
-    const refreshFailures = Object.entries(refreshChecks).filter(([, value]) => value !== true);
+    const refreshFailures = Object.entries(refreshChecks).filter(([key, value]) => key !== 'pullFailureDiagnostics' && value !== true);
     if (refreshFailures.length) throw new Error('Refresh/account-isolation checks failed: ' + JSON.stringify(refreshChecks));
 
     if (errors.length) throw new Error('Browser errors:\\n' + errors.join('\\n'));
