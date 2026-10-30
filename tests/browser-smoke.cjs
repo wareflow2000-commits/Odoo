@@ -300,8 +300,92 @@ const fs = require('fs');
     );
     if (syncFailures.length) throw new Error('Stocktake sync checks failed: ' + JSON.stringify(syncChecks));
 
+    const warehouseScopeChecks = await page.evaluate(async () => {
+      const { store, applyAccessFilter } = await import('/core-store.js');
+      const { accessibleWarehouseIds, canAccessWarehouse } = await import('/core-rbac.js');
+      const w1 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
+      const w2 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2';
+      const w3 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3';
+      const reset = () => {
+        store.data.warehouses = [w1, w2, w3].map((id, i) => ({ id, name: 'Scope warehouse ' + (i + 1) }));
+        store.data.zones = [];
+        store.data.storage_areas = [];
+        store.data.warehouse_storage_areas = [];
+        store.data.sections = [];
+        store.data.shelves = [];
+        store.data.stock = [];
+        store.data.transactions = [];
+        store.data.transaction_lines = [];
+        store.data.stocktake_sessions = [];
+        store.data.stocktake_lines = [];
+        store.data.stocktake_logs = [];
+        store.data.stock_transfers = [];
+        store.data.stock_transfer_orders = [];
+        store.data.inventory_ledger = [];
+        store.data.transaction_ledger = [];
+        store.data.transaction_audit = [];
+        store.data.archive_movements = [];
+        store.data.archive_balances = [];
+        store.data.audit_logs = [];
+        store.data.sync_log = [];
+      };
+      store.scopeConfigLoaded = true;
+      store.data.role_warehouse_scopes = [{ role_name: 'CLERK', scope_mode: 'SELECTED', warehouse_ids: [w1, w2] }];
+      window.__session = { id: 'scope-test-user', role: 'CLERK', offline: false, profile: { id: 'scope-test-user', assigned_warehouse_ids: [] } };
+      reset();
+      applyAccessFilter();
+      const selectedRole = store.data.warehouses.map(x => x.id).sort().join(',') === [w1, w2].sort().join(',')
+        && accessibleWarehouseIds().length === 2 && canAccessWarehouse(w2) && !canAccessWarehouse(w3);
+
+      window.__session.profile.assigned_warehouse_ids = [w1, w3];
+      reset();
+      applyAccessFilter();
+      const assignmentIntersection = store.data.warehouses.length === 1
+        && store.data.warehouses[0].id === w1
+        && accessibleWarehouseIds().length === 1 && canAccessWarehouse(w1) && !canAccessWarehouse(w3);
+
+      window.__session.role = 'MANAGER';
+      window.__session.profile.role = 'MANAGER';
+      window.__session.profile.assigned_warehouse_ids = [];
+      store.data.role_warehouse_scopes = [{ role_name: 'MANAGER', scope_mode: 'INHERIT', warehouse_ids: [] }];
+      reset();
+      applyAccessFilter();
+      const inheritFailsClosed = store.data.warehouses.length === 0 && accessibleWarehouseIds().length === 0;
+
+      store.data.role_warehouse_scopes = [{ role_name: 'MANAGER', scope_mode: 'ALL', warehouse_ids: [] }];
+      reset();
+      applyAccessFilter();
+      const explicitAll = store.data.warehouses.length === 3 && accessibleWarehouseIds() === null && canAccessWarehouse(w3);
+
+      window.__session.profile.assigned_warehouse_ids = [w2];
+      reset();
+      applyAccessFilter();
+      const userAssignmentNarrowsAll = store.data.warehouses.length === 1
+        && store.data.warehouses[0].id === w2 && accessibleWarehouseIds().length === 1;
+
+      window.__session.role = 'SUPER_ADMIN';
+      window.__session.profile.role = 'SUPER_ADMIN';
+      window.__session.profile.assigned_warehouse_ids = [];
+      store.data.role_warehouse_scopes = [{ role_name: 'SUPER_ADMIN', scope_mode: 'INHERIT', warehouse_ids: [] }];
+      reset();
+      applyAccessFilter();
+      const legacyAdminInherit = store.data.warehouses.length === 3 && accessibleWarehouseIds() === null;
+
+      store.scopeConfigLoaded = false;
+      reset();
+      applyAccessFilter();
+      const missingScopeFailsClosed = store.data.warehouses.length === 0
+        && accessibleWarehouseIds().length === 0 && !canAccessWarehouse(w1);
+
+      store.scopeConfigLoaded = true;
+      return { selectedRole, assignmentIntersection, inheritFailsClosed, explicitAll,
+        userAssignmentNarrowsAll, legacyAdminInherit, missingScopeFailsClosed };
+    });
+    const scopeFailures = Object.entries(warehouseScopeChecks).filter(([, value]) => value !== true);
+    if (scopeFailures.length) throw new Error('Warehouse scope checks failed: ' + JSON.stringify(warehouseScopeChecks));
+
     if (errors.length) throw new Error('Browser errors:\\n' + errors.join('\\n'));
-    console.log('PASS: login desktop/mobile smoke; no browser errors; offline policy allows ISSUE only; single-warehouse scope enforced; multi-warehouse offline denied; stocktake count queued locally with BOX x12 = 24 PCS and bound to its creator; refresh/fetch-failure cache preservation; conversion conflict; corrected-factor sync exactly once; foreign-user cached snapshot rejected.');
+    console.log('PASS: login desktop/mobile smoke; no browser errors; offline policy allows ISSUE only; single-warehouse scope enforced; multi-warehouse offline denied; stocktake count queued locally with BOX x12 = 24 PCS and bound to its creator; refresh/fetch-failure cache preservation; conversion conflict; corrected-factor sync exactly once; foreign-user cached snapshot rejected; role SELECTED/ALL/INHERIT scopes and user-assignment intersections enforced in UI.');
   } catch (error) {
     fs.mkdirSync('test-results', { recursive: true });
     await page.screenshot({ path: 'test-results/failure.png', fullPage: true }).catch(() => {});
