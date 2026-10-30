@@ -100,7 +100,7 @@ const fs = require('fs');
         && legacyQueueRows.length === 1 && legacyQueueRows[0].status === 'CONFLICT'
         && JSON.parse(localStorage.getItem('orshap_master_outbox_quarantine_v1:' + legacyUserId) || '[]').length === 1;
       const legacyQueueBlocksFurtherOfflineWork = store.legacyMasterDataNeedsRefresh
-        && !offlineWarehouseAllowed(warehouseId);
+        && !offlineWarehouseAllowed(warehouseId) && !offlineTransactionTypeAllowed('ISSUE');
       window.__session = originalSession;
       queueSnapshot();
 
