@@ -180,6 +180,24 @@ const FALLBACK_PERMISSIONS = [
 /* ── small helpers ───────────────────────────────────────────────────────── */
 
 function canManage() { return canManageSettings(); }
+
+function canManageImportEntity(entity, updateExisting = F.import.updateExisting) {
+  if (entity === 'warehouses') {
+    const assigned = window.__session?.profile?.assigned_warehouse_ids;
+    return ['SUPER_ADMIN', 'ADMIN'].includes(userRole())
+      && Array.isArray(assigned) && assigned.length === 0
+      && can('action:warehouse:manage');
+  }
+  if (entity === 'storage_areas' || entity === 'shelves') {
+    return can('action:facility:manage');
+  }
+  if (entity === 'items') {
+    return can('action:item:create')
+      && (!updateExisting || can('action:item:update'));
+  }
+  return false;
+}
+
 function flagValue(flag) {
   const v = setting(flag.key, flag.def);
   if (v === false || v === 'false' || v === 0 || v === '0') return false;
@@ -834,7 +852,9 @@ function refreshImportMappingState(main) {
     if (text) text.textContent = missing.map(importFieldLabel).join(tx('، ', ', '));
   }
   const apply = main.querySelector('#importApply');
-  if (apply) apply.disabled = !!missing.length || F.import.busy || !canManage() || !navigator.onLine || !!window.__session?.offline;
+  if (apply) apply.disabled = !!missing.length || F.import.busy
+    || !canManageImportEntity(F.import.entity, F.import.updateExisting)
+    || !navigator.onLine || !!window.__session?.offline;
   const mapped = def.fields.filter(f => F.import.mapping[f.key]).length;
   const count = main.querySelector('#importMappedCount');
   if (count) count.textContent = `${mapped}/${def.fields.length}`;
@@ -851,8 +871,8 @@ async function applyImport() {
   }
   const def = IMPORT_ENTITIES[x.entity];
   if (!def) return;
-  if (!canManage()) {
-    toast(tx('ليست لديك صلاحية استيراد البيانات.', 'You do not have permission to import data.'), 'error');
+  if (!canManageImportEntity(x.entity, x.updateExisting)) {
+    toast(tx('لا تملك صلاحية إنشاء أو تحديث هذا النوع من البيانات.', 'You do not have the required create/update permission for this data type.'), 'error');
     return;
   }
   if (!navigator.onLine || window.__session?.offline) {
@@ -983,7 +1003,8 @@ function renderImport(banned) {
   const mappedCount = fields.filter(f => x.mapping[f.key]).length;
   const missing = fields.filter(f => f.required && !x.mapping[f.key]);
   const can = !banned;
-  const canWrite = can && navigator.onLine && !window.__session?.offline;
+  const entityPermission = canManageImportEntity(x.entity, x.updateExisting);
+  const canWrite = can && entityPermission && navigator.onLine && !window.__session?.offline;
   const previewHeaders = x.headers.slice(0, 8);
   const previewRows = x.rows.slice(0, 5);
 
@@ -1004,8 +1025,10 @@ function renderImport(banned) {
 
     ${banned ? alertBox(tx('ليست لديك صلاحية استيراد البيانات. العرض للقراءة فقط.',
       'You do not have permission to import data. Read-only view.'), 'warning') : ''}
-    ${!banned && !canWrite ? alertBox(tx('يمكن تجهيز الملف وربط الأعمدة دون اتصال، لكن حفظ البيانات يتطلب اتصالًا مباشرًا بالخادم.',
-      'You can prepare the file and map columns offline, but saving requires a live server connection.'), 'warning') : ''}
+    ${!banned && !entityPermission ? alertBox(tx('لا تملك صلاحية إنشاء أو تحديث نوع البيانات المحدد. ستظل المعاينة متاحة دون تنفيذ الاستيراد.',
+      'You do not have the create/update permission for this data type. Preview remains available, but import is disabled.'), 'warning') : ''}
+    ${!banned && entityPermission && !canWrite ? alertBox(tx('يمكن تجهيز الملف وربط الأعمدة دون اتصال، لكن حفظ البيانات يتطلب اتصالًا مباشرًا بالخادم.',
+      'You can prepare the file and map its columns offline, but saving requires a live server connection.'), 'warning') : ''}
 
     <div class="o_import_entities">
       ${Object.entries(IMPORT_ENTITIES).map(([key, entity]) => `<button type="button"
