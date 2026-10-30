@@ -70,6 +70,27 @@ DECLARE
   status_prefix text := 'BEGIN' || E'\n' ||
     '  IF NEW.status IS NOT DISTINCT FROM OLD.status THEN';
   status_prefix_new text := 'BEGIN' || E'\n' ||
+    '  -- A transfer receipt is a system-generated voucher authorized by the' || E'\n' ||
+    '  -- receive RPC, not a user self-approval of a normal inventory voucher.' || E'\n' ||
+    '  IF OLD.status=''PENDING_APPROVAL'' AND NEW.status=''APPROVED''' || E'\n' ||
+    '     AND v_user_id IS NOT NULL AND NEW.created_by=v_user_id' || E'\n' ||
+    '     AND NEW.transaction_type=''TRANSFER_IN''' || E'\n' ||
+    '     AND EXISTS (' || E'\n' ||
+    '       SELECT 1 FROM public.wms_transfer_scope_context c' || E'\n' ||
+    '       JOIN public.stock_transfers st ON st.id=c.transfer_id' || E'\n' ||
+    '       WHERE c.transaction_id=txid_current() AND c.actor_id=v_user_id' || E'\n' ||
+    '         AND c.context_type=''RECEIVE_RECEIPT''' || E'\n' ||
+    '         AND NEW.reference_no=st.reference_no||''-RCV-''||COALESCE(st.received_quantity,0)::text' || E'\n' ||
+    '         AND NEW.warehouse_id=st.destination_warehouse_id' || E'\n' ||
+    '         AND st.status IN (''IN_TRANSIT'',''PARTIALLY_RECEIVED'')' || E'\n' ||
+    '         AND public.current_user_can_access_warehouse(st.destination_warehouse_id)' || E'\n' ||
+    '         AND public.authorize_action(''action:stock_transfer:receive'',''stock_transfer'',st.id,' || E'\n' ||
+    '           st.destination_warehouse_id,' || E'\n' ||
+    '           jsonb_build_object(''status'',st.status,''source_warehouse_id'',st.source_warehouse_id,' || E'\n' ||
+    '             ''destination_warehouse_id'',st.destination_warehouse_id),true)' || E'\n' ||
+    '     ) THEN' || E'\n' ||
+    '    RETURN NEW;' || E'\n' ||
+    '  END IF;' || E'\n' ||
     '  -- Only the authenticated actor who is rejecting an in-transit transfer may' || E'\n' ||
     '  -- post its paired source-side TRANSFER_RETURN voucher in this transaction.' || E'\n' ||
     '  IF OLD.status=''PENDING_APPROVAL'' AND NEW.status=''APPROVED''' || E'\n' ||
@@ -154,6 +175,12 @@ BEGIN
      OR position('p_transaction_type:=''TRANSFER_RETURN''' IN d)=0
      OR position('v_profile' IN d)>0 THEN
     RAISE EXCEPTION 'Rejected transfer return accounting classification verification failed';
+  END IF;
+  SELECT pg_get_functiondef('public.guard_transaction_status_change()'::regprocedure) INTO d;
+  IF position('context_type=''REJECT_RECEIPT''' IN d)=0
+     OR position('context_type=''RECEIVE_RECEIPT''' IN d)=0
+     OR position('action:stock_transfer:receive' IN d)=0 THEN
+    RAISE EXCEPTION 'Transfer receipt/rejection posting authorization guards are incomplete';
   END IF;
 END;
 $verify$;
