@@ -7,9 +7,9 @@ DECLARE
   v_definition text;
   v_updated text;
   v_header_old text :=
-    'VALUES(v_tx,v_transfer.reference_no||''-REJECT-RETURN'',''ADJUSTMENT_IN'',''APPROVED'',v_shelf.warehouse_id';
+    'VALUES(v_tx,v_transfer.reference_no||''-REJECT-RETURN'',''TRANSFER_RETURN'',''APPROVED'',v_shelf.warehouse_id';
   v_header_new text :=
-    'VALUES(v_tx,v_transfer.reference_no||''-REJECT-RETURN'',''ADJUSTMENT_IN'',''PENDING_APPROVAL'',v_shelf.warehouse_id';
+    'VALUES(v_tx,v_transfer.reference_no||''-REJECT-RETURN'',''TRANSFER_RETURN'',''PENDING_APPROVAL'',v_shelf.warehouse_id';
   v_line_anchor text :=
     'VALUES(v_tx,v_transfer.item_id,v_transfer.source_shelf_id,v_transfer.quantity,v_before,v_after,v_transfer.batch_no,v_transfer.expiry_date,v_area,''Transfer=''||p_transfer_id::text||''; direction=REJECTED_RETURN; reason=''||btrim(p_reason));';
   v_line_replacement text := v_line_anchor || E'\n' ||
@@ -195,7 +195,7 @@ DECLARE
     '  IF OLD.status=''PENDING_APPROVAL''' || E'\n' ||
     '     AND NEW.status=''APPROVED''' || E'\n' ||
     '     AND v_user_id IS NOT NULL AND NEW.created_by=v_user_id' || E'\n' ||
-    '     AND NEW.transaction_type=''ADJUSTMENT_IN''' || E'\n' ||
+    '     AND NEW.transaction_type=''TRANSFER_RETURN''' || E'\n' ||
     '     AND EXISTS (' || E'\n' ||
     '       SELECT 1 FROM public.wms_transfer_scope_context c' || E'\n' ||
     '       JOIN public.stock_transfers st ON st.id=c.transfer_id' || E'\n' ||
