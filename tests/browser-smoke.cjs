@@ -47,6 +47,82 @@ const fs = require('fs');
       throw new Error('Settings tab render checks failed: ' + JSON.stringify(settingsTabChecks));
     }
 
+    // Reconcile the item movement summary using isolated ledger fixtures.
+    // Internal transfer movements must not be counted as consumption or supplier receipts.
+    const transferReportChecks = await page.evaluate(async () => {
+      const { store } = await import('/core-store.js');
+      await import('/page-reports.js');
+      const original = {
+        items: store.data.items,
+        warehouses: store.data.warehouses,
+        ledger: store.data.inventory_ledger
+      };
+      const itemId = '77777777-7777-4777-8777-777777777777';
+      const sourceWarehouse = '88888888-8888-4888-8888-888888888888';
+      const destinationWarehouse = '99999999-9999-4999-8999-999999999999';
+      const sourceShelf = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+      const destinationShelf = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+      const at = (hour, minute = 0) => new Date(Date.UTC(2026, 9, 20, hour, minute)).toISOString();
+      try {
+        store.data.items = [{ id: itemId, code: 'SKU-REPORT-TRANSFER', name_en: 'Transfer test item', base_unit: 'PCS' }];
+        store.data.warehouses = [
+          { id: sourceWarehouse, name: 'Report source' },
+          { id: destinationWarehouse, name: 'Report destination' }
+        ];
+        store.data.inventory_ledger = [
+          { id: '1', item_id: itemId, warehouse_id: sourceWarehouse, shelf_id: sourceShelf, batch_no: 'B1',
+            source_type: 'OPENING_BALANCE', source_ref: 'OPEN-REPORT', occurred_at: at(8), created_at: at(8),
+            delta: 100, running_balance: 100 },
+          { id: '2', item_id: itemId, warehouse_id: sourceWarehouse, shelf_id: sourceShelf, batch_no: 'B1',
+            source_type: 'GRN', source_ref: 'GRN-REPORT', occurred_at: at(9), created_at: at(9),
+            delta: 20, running_balance: 120 },
+          { id: '3', item_id: itemId, warehouse_id: sourceWarehouse, shelf_id: sourceShelf, batch_no: 'B1',
+            source_type: 'ISSUE', source_ref: 'ISSUE-REPORT', occurred_at: at(10), created_at: at(10),
+            delta: -5, running_balance: 115 },
+          { id: '4', item_id: itemId, warehouse_id: sourceWarehouse, shelf_id: sourceShelf, batch_no: 'B1',
+            source_type: 'ADJUSTMENT_OUT', source_ref: 'TRF-REPORT-L001',
+            metadata: { transfer_id: 'transfer-report-1' }, occurred_at: at(11), created_at: at(11),
+            delta: -30, running_balance: 85 },
+          { id: '5', item_id: itemId, warehouse_id: sourceWarehouse, shelf_id: sourceShelf, batch_no: 'B1',
+            source_type: 'TRANSFER_RETURN', source_ref: 'TRF-REPORT-L001',
+            metadata: { transfer_id: 'transfer-report-1' }, occurred_at: at(12), created_at: at(12),
+            delta: 4, running_balance: 89 },
+          { id: '6', item_id: itemId, warehouse_id: destinationWarehouse, shelf_id: destinationShelf, batch_no: 'B1',
+            source_type: 'TRANSFER_IN', source_ref: 'TRF-REPORT-L001',
+            metadata: { transfer_id: 'transfer-report-1' }, occurred_at: at(13), created_at: at(13),
+            delta: 10, running_balance: 10 }
+        ];
+        const report = window.OW.wms.reports.reportData('tx-summary');
+        const source = report.rows.find(row => row[0] === 'SKU-REPORT-TRANSFER' && row[3] === 'Report source');
+        const destination = report.rows.find(row => row[0] === 'SKU-REPORT-TRANSFER' && row[3] === 'Report destination');
+        const sourceValues = source || [];
+        const destinationValues = destination || [];
+        return {
+          headers: report.headers.length,
+          source: sourceValues.slice(4),
+          destination: destinationValues.slice(4),
+          sourceCorrect: sourceValues.length === 11
+            && sourceValues[4] === 100 && sourceValues[5] === 20
+            && sourceValues[6] === 0 && sourceValues[7] === 4
+            && sourceValues[8] === 5 && sourceValues[9] === 30
+            && sourceValues[10] === 89,
+          destinationCorrect: destinationValues.length === 11
+            && destinationValues[4] === 0 && destinationValues[5] === 0
+            && destinationValues[6] === 10 && destinationValues[7] === 0
+            && destinationValues[8] === 0 && destinationValues[9] === 0
+            && destinationValues[10] === 10
+        };
+      } finally {
+        store.data.items = original.items;
+        store.data.warehouses = original.warehouses;
+        store.data.inventory_ledger = original.ledger;
+      }
+    });
+    if (!transferReportChecks.sourceCorrect || !transferReportChecks.destinationCorrect
+      || transferReportChecks.headers !== 11) {
+      throw new Error('Transfer movement report classification failed: ' + JSON.stringify(transferReportChecks));
+    }
+
     // Exercise the real store module in Chromium with isolated in-memory fixtures.
     // No Supabase writes are performed: the browser is deliberately put offline.
     const offlineChecks = await page.evaluate(async () => {
