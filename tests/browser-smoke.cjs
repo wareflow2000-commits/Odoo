@@ -41,6 +41,10 @@ const fs = require('fs');
         result[tab] = typeof settingsPage.render() === 'string';
       }
       window.OW.wms.settingsTab('general');
+      const generalHtml = settingsPage.render();
+      result.general = typeof generalHtml === 'string'
+        && !generalHtml.includes('data-flag="REQUIRE_APPROVAL"')
+        && (generalHtml.includes('تفويض') || /delegation/i.test(generalHtml));
       return result;
     });
     if (Object.keys(settingsTabChecks).length !== 8 || Object.values(settingsTabChecks).some(value => value !== true)) {
