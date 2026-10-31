@@ -155,10 +155,6 @@ const IMPORT_TRUE = new Set(['true', '1', 'yes', 'y', 'active', 'نشط', 'نش�
 const IMPORT_FALSE = new Set(['false', '0', 'no', 'n', 'inactive', 'غيرنشط', 'غيرنشطة', 'لا', 'معطل', 'معطلة']);
 
 const FLAGS = [
-  { key: 'REQUIRE_APPROVAL', def: true,
-    ar: ['طلب اعتماد المعاملات', 'Require transaction approval'],
-    descAr: 'عند التعطيل تُعتمد معاملات الأدوار العليا تلقائيًا عند الحفظ.',
-    descEn: 'When disabled, elevated roles auto-approve transactions on save.' },
   { key: 'USE_UNIT_CONVERSION', def: true,
     ar: ['تفعيل تحويل الوحدات', 'Enable unit conversion'],
     descAr: 'السماح بإدخال الكميات بوحدات الشراء والتحويل إلى الوحدة الأساسية.',
@@ -285,7 +281,8 @@ function renderGeneral(banned) {
   return `
     <div class="o_grid" style="grid-template-columns:1.4fr 1fr">
       ${card(`<i class="fa-solid fa-sliders"></i> ${tx('أعلام النظام', 'System flags')}`,
-        `<div class="o_setting_list">
+        `${alertBox(tx('لا يمنح الدور أو الإعداد العام حق اعتماد السند الذي أنشأه المستخدم. الاعتماد الذاتي يتطلب تفويضاً فردياً صريحاً وتفعيل السماح بالاعتماد الذاتي في ملف المستخدم.', 'A role or global setting does not grant permission to approve a voucher created by the same user. Self-approval requires an explicit user-scoped delegation and the user profile self-approval flag.'), 'info')}
+        <div class="o_setting_list">
           ${FLAGS.map(f => {
             const on = flagValue(f);
             return `<div class="o_setting_row">
