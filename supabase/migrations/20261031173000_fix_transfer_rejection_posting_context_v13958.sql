@@ -48,8 +48,11 @@ DECLARE
   v_definition text;
   v_updated text;
   v_anchor text :=
-    '  RAISE EXCEPTION ''Transaction status can only be changed through an authorized posting or rejection workflow'';';
-  v_replacement text :=
+    '  IF NEW.status IS NOT DISTINCT FROM OLD.status THEN' || E'\n' ||
+    '    RETURN NEW;' || E'\n' ||
+    '  END IF;';
+  v_rejection_context text :=
+    '  -- REJECT_RECEIPT_CONTEXT_APPROVAL: narrow internal posting exception.' || E'\n' ||
     '  IF OLD.status=''PENDING_APPROVAL''' || E'\n' ||
     '     AND NEW.status=''APPROVED''' || E'\n' ||
     '     AND v_user_id IS NOT NULL AND NEW.created_by=v_user_id' || E'\n' ||
@@ -69,22 +72,19 @@ DECLARE
     '           jsonb_build_object(''status'',st.status,''source_warehouse_id'',st.source_warehouse_id,''destination_warehouse_id'',st.destination_warehouse_id),true)' || E'\n' ||
     '     ) THEN' || E'\n' ||
     '    RETURN NEW;' || E'\n' ||
-    '  END IF;' || E'\n' ||
-    v_anchor;
+    '  END IF;';
 BEGIN
   SELECT pg_get_functiondef(
     'public.guard_transaction_status_change()'::regprocedure
   ) INTO v_definition;
 
-  IF position('REJECT_RECEIPT' IN v_definition)=0
-     OR position('Rejected transfer return voucher could not be posted' IN
-       pg_get_functiondef('public.reject_stock_transfer_receipt(uuid,text)'::regprocedure))=0 THEN
+  IF position('REJECT_RECEIPT_CONTEXT_APPROVAL' IN v_definition)=0 THEN
     IF position(v_anchor IN v_definition)=0 THEN
-      RAISE EXCEPTION 'Transaction status guard rejection anchor not found';
+      RAISE EXCEPTION 'Transaction status guard early insertion anchor not found';
     END IF;
-    v_updated:=replace(v_definition,v_anchor,v_replacement);
+    v_updated:=replace(v_definition,v_anchor,v_anchor||E'\n'||v_rejection_context);
     IF v_updated=v_definition THEN
-      RAISE EXCEPTION 'Transaction status guard rejection patch made no change';
+      RAISE EXCEPTION 'Transaction status guard rejection context patch made no change';
     END IF;
     EXECUTE v_updated;
   END IF;
