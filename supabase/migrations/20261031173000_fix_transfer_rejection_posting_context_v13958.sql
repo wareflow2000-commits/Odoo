@@ -129,24 +129,7 @@ DECLARE
     '  IF NEW.status IS NOT DISTINCT FROM OLD.status THEN' || E'\n' ||
     '    RETURN NEW;' || E'\n' ||
     '  END IF;';
-  v_receive_context text :=
-    '  -- RECEIVE_RECEIPT_CONTEXT_APPROVAL: validated destination receipt posting.' || E'\n' ||
-    '  IF OLD.status=''PENDING_APPROVAL''' || E'\n' ||
-    '     AND NEW.status=''APPROVED''' || E'\n' ||
-    '     AND v_user_id IS NOT NULL AND NEW.created_by=v_user_id' || E'\n' ||
-    '     AND NEW.transaction_type=''TRANSFER_IN''' || E'\n' ||
-    '     AND EXISTS (' || E'\n' ||
-    '       SELECT 1 FROM public.wms_transfer_scope_context c' || E'\n' ||
-    '       JOIN public.stock_transfers st ON st.id=c.transfer_id' || E'\n' ||
-    '       WHERE c.transaction_id=txid_current() AND c.actor_id=v_user_id' || E'\n' ||
-    '         AND c.context_type=''RECEIVE_RECEIPT''' || E'\n' ||
-    '         AND st.status IN (''IN_TRANSIT'',''PARTIALLY_RECEIVED'')' || E'\n' ||
-    '         AND NEW.warehouse_id=st.destination_warehouse_id' || E'\n' ||
-    '         AND NEW.reference_no=st.reference_no||''-RCV-''||COALESCE(st.received_quantity,0)::text' || E'\n' ||
-    '         AND public.current_user_can_access_warehouse(st.destination_warehouse_id)' || E'\n' ||
-    '         AND public.authorize_action(''action:stock_transfer:receive'',''stock_transfer'',st.id,st.destination_warehouse_id,' || E'\n' ||
-    '           jsonb_build_object(''status'',st.status,''source_warehouse_id'',st.source_warehouse_id,''destination_warehouse_id'',st.destination_warehouse_id),true)' || E'\n' ||
-    '     ) THEN RETURN NEW; END IF;';
+
   v_confirm_context text :=
     '  -- CONFIRM_RETURN_CONTEXT_APPROVAL: accepted return physically received at source.' || E'\n' ||
     '  IF OLD.status=''PENDING_APPROVAL''' || E'\n' ||
@@ -205,8 +188,8 @@ BEGIN
      OR position('Rejected transfer return could not be posted' IN v_reject_definition)=0
      OR position('Transfer receipt voucher could not be posted' IN
        pg_get_functiondef('public.receive_stock_transfer_quantity_at_shelf_v2(uuid,numeric,uuid,boolean,text)'::regprocedure))=0
-     OR position('RECEIVE_RECEIPT_CONTEXT_APPROVAL' IN v_guard_definition)=0
-     OR position('REJECT_RECEIPT_CONTEXT_APPROVAL' IN v_guard_definition)=0
+     OR position('context_type=''RECEIVE_RECEIPT''' IN v_guard_definition)=0
+     OR position('context_type=''REJECT_RECEIPT''' IN v_guard_definition)=0
      OR position('CONFIRM_RETURN_CONTEXT_APPROVAL' IN v_guard_definition)=0
      OR position('Transfer return receipt voucher could not be posted' IN
        pg_get_functiondef('public.confirm_stock_transfer_return(uuid)'::regprocedure))=0
