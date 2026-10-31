@@ -43,6 +43,19 @@ $reject_function_patch$;
 -- Permit only this tightly bound rejection posting transition. The transfer
 -- must still be IN_TRANSIT, the actor must retain destination scope, and the
 -- existing action authorization is re-evaluated by the status trigger.
+-- Include the source-side confirmation as a distinct transaction-local context.
+ALTER TABLE public.wms_transfer_scope_context
+  DROP CONSTRAINT IF EXISTS wms_transfer_scope_context_context_type_check;
+ALTER TABLE public.wms_transfer_scope_context
+  ADD CONSTRAINT wms_transfer_scope_context_context_type_check
+  CHECK (context_type = ANY (ARRAY[
+    'REJECT_RECEIPT'::text,
+    'FINALIZE_SOURCE'::text,
+    'RECEIVE_RECEIPT'::text,
+    'DISPATCH_ORDER'::text,
+    'CONFIRM_RETURN'::text
+  ]));
+
 DO $receive_function_patch$
 DECLARE
   v_definition text;
@@ -88,6 +101,50 @@ BEGIN
 END;
 $receive_function_patch$;
 
+DO $confirm_return_function_patch$
+DECLARE
+  v_definition text;
+  v_updated text;
+  v_context_old text := 'v_tx := gen_random_uuid();';
+  v_context_new text := v_context_old || E'\n' ||
+    ' INSERT INTO public.wms_transfer_scope_context(transaction_id,transfer_id,actor_id,context_type)' || E'\n' ||
+    ' VALUES(txid_current(),p_transfer_id,v_user,''CONFIRM_RETURN'');';
+  v_header_old text :=
+    '''TRANSFER_RETURN'', ''APPROVED'',';
+  v_header_new text :=
+    '''TRANSFER_RETURN'', ''PENDING_APPROVAL'',';
+  v_line_anchor text :=
+    'COALESCE(v_t.return_reason, ''''));';
+  v_line_replacement text := v_line_anchor || E'\n' ||
+    ' UPDATE public.transactions SET status=''APPROVED'' WHERE id=v_tx AND status=''PENDING_APPROVAL'';' || E'\n' ||
+    ' IF NOT FOUND THEN RAISE EXCEPTION ''Transfer return receipt voucher could not be posted''; END IF;' || E'\n' ||
+    ' DELETE FROM public.wms_transfer_scope_context WHERE transaction_id=txid_current() AND transfer_id=p_transfer_id AND actor_id=v_user AND context_type=''CONFIRM_RETURN'';';
+BEGIN
+  SELECT pg_get_functiondef(
+    'public.confirm_stock_transfer_return(uuid)'::regprocedure
+  ) INTO v_definition;
+
+  IF position('Transfer return receipt voucher could not be posted' IN v_definition)=0 THEN
+    IF position(v_context_old IN v_definition)=0 THEN
+      RAISE EXCEPTION 'Transfer return confirmation context anchor not found';
+    END IF;
+    v_updated:=replace(v_definition,v_context_old,v_context_new);
+    IF v_updated=v_definition THEN RAISE EXCEPTION 'Transfer return confirmation context patch made no change'; END IF;
+
+    IF position(v_header_old IN v_updated)=0 THEN
+      RAISE EXCEPTION 'Transfer return confirmation header status anchor not found';
+    END IF;
+    v_updated:=replace(v_updated,v_header_old,v_header_new);
+
+    IF position(v_line_anchor IN v_updated)=0 THEN
+      RAISE EXCEPTION 'Transfer return confirmation line anchor not found';
+    END IF;
+    v_updated:=replace(v_updated,v_line_anchor,v_line_replacement);
+    EXECUTE v_updated;
+  END IF;
+END;
+$confirm_return_function_patch$;
+
 DO $status_guard_patch$
 DECLARE
   v_definition text;
@@ -114,6 +171,25 @@ DECLARE
     '         AND public.authorize_action(''action:stock_transfer:receive'',''stock_transfer'',st.id,st.destination_warehouse_id,' || E'\n' ||
     '           jsonb_build_object(''status'',st.status,''source_warehouse_id'',st.source_warehouse_id,''destination_warehouse_id'',st.destination_warehouse_id),true)' || E'\n' ||
     '     ) THEN RETURN NEW; END IF;';
+  v_confirm_context text :=
+    '  -- CONFIRM_RETURN_CONTEXT_APPROVAL: accepted return physically received at source.' || E'\n' ||
+    '  IF OLD.status=''PENDING_APPROVAL''' || E'\n' ||
+    '     AND NEW.status=''APPROVED''' || E'\n' ||
+    '     AND v_user_id IS NOT NULL AND NEW.created_by=v_user_id' || E'\n' ||
+    '     AND NEW.transaction_type=''TRANSFER_RETURN''' || E'\n' ||
+    '     AND EXISTS (' || E'\n' ||
+    '       SELECT 1 FROM public.wms_transfer_scope_context c' || E'\n' ||
+    '       JOIN public.stock_transfers st ON st.id=c.transfer_id' || E'\n' ||
+    '       WHERE c.transaction_id=txid_current() AND c.actor_id=v_user_id' || E'\n' ||
+    '         AND c.context_type=''CONFIRM_RETURN''' || E'\n' ||
+    '         AND st.status=''RETURN_IN_TRANSIT''' || E'\n' ||
+    '         AND COALESCE(st.return_review_status,''PENDING'')=''ACCEPTED''' || E'\n' ||
+    '         AND NEW.warehouse_id=st.source_warehouse_id' || E'\n' ||
+    '         AND NEW.reference_no=st.reference_no||''-RET-RCV''' || E'\n' ||
+    '         AND public.current_user_can_access_warehouse(st.source_warehouse_id)' || E'\n' ||
+    '         AND public.authorize_action(''action:stock_transfer:return:receive'',''stock_transfer'',st.id,st.source_warehouse_id,' || E'\n' ||
+    '           jsonb_build_object(''status'',st.status,''return_review_status'',st.return_review_status),true)' || E'\n' ||
+    '     ) THEN RETURN NEW; END IF;';
   v_rejection_context text :=
     '  -- REJECT_RECEIPT_CONTEXT_APPROVAL: narrow internal posting exception.' || E'\n' ||
     '  IF OLD.status=''PENDING_APPROVAL''' || E'\n' ||
@@ -138,12 +214,13 @@ BEGIN
   ) INTO v_definition;
 
   IF position('RECEIVE_RECEIPT_CONTEXT_APPROVAL' IN v_definition)=0
-     OR position('REJECT_RECEIPT_CONTEXT_APPROVAL' IN v_definition)=0 THEN
+     OR position('REJECT_RECEIPT_CONTEXT_APPROVAL' IN v_definition)=0
+     OR position('CONFIRM_RETURN_CONTEXT_APPROVAL' IN v_definition)=0 THEN
     IF position(v_anchor IN v_definition)=0 THEN
       RAISE EXCEPTION 'Transaction status guard early insertion anchor not found';
     END IF;
     v_updated:=replace(v_definition,v_anchor,
-      v_anchor||E'\n'||v_receive_context||E'\n'||v_rejection_context);
+      v_anchor||E'\n'||v_receive_context||E'\n'||v_rejection_context||E'\n'||v_confirm_context);
     IF v_updated=v_definition THEN
       RAISE EXCEPTION 'Transaction status guard transfer receipt/rejection patch made no change';
     END IF;
@@ -168,8 +245,12 @@ BEGIN
        pg_get_functiondef('public.receive_stock_transfer_quantity_at_shelf_v2(uuid,numeric,uuid,boolean,text)'::regprocedure))=0
      OR position('RECEIVE_RECEIPT_CONTEXT_APPROVAL' IN v_guard_definition)=0
      OR position('REJECT_RECEIPT_CONTEXT_APPROVAL' IN v_guard_definition)=0
+     OR position('CONFIRM_RETURN_CONTEXT_APPROVAL' IN v_guard_definition)=0
+     OR position('Transfer return receipt voucher could not be posted' IN
+       pg_get_functiondef('public.confirm_stock_transfer_return(uuid)'::regprocedure))=0
      OR position('action:stock_transfer:receive' IN v_guard_definition)=0
-     OR position('action:stock_transfer:reject_receipt' IN v_guard_definition)=0 THEN
+     OR position('action:stock_transfer:reject_receipt' IN v_guard_definition)=0
+     OR position('action:stock_transfer:return:receive' IN v_guard_definition)=0 THEN
     RAISE EXCEPTION 'Transfer receipt/rejection immutable-voucher posting verification failed';
   END IF;
 END;
