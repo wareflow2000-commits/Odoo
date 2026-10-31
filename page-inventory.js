@@ -13,7 +13,7 @@ import {
   zoneOptions, stockQty, stockByItem, setting,
   itemBaseUnitLockReason, itemUnitFactor
 } from './core-store.js';
-import { isAdmin, isElevated, can } from './core-rbac.js';
+import { canDatabasePermission } from './core-rbac.js';
 import { fmtNum, fmtMoney, fmtDateTime, todayISO } from './core-utils.js';
 import { toast } from './core-toast.js';
 import { modal, confirmDialog } from './core-modal.js';
@@ -71,7 +71,7 @@ function render() {
   ${pageHead(tx('المخزون', 'Inventory'),
     tx('الأصناف والأرصدة والمواقع — مع دعم باركود QR', 'Items, balances and locations with QR labels'),
     `${openingBalance}
-     ${btn(`<i class="fa-solid fa-plus"></i> ${tx('صنف جديد', 'New item')}`, 'onclick="OW.wms.itemModal()"', 'primary')}
+     ${canDatabasePermission('action:item:create') ? btn(`<i class="fa-solid fa-plus"></i> ${tx('صنف جديد', 'New item')}`, 'onclick="OW.wms.itemModal()"', 'primary') : ''}
      ${btn(`<i class="fa-solid fa-qrcode"></i> ${tx('طباعة ملصقات', 'Print labels')}`, 'onclick="OW.wms.printAllLabels()"', 'secondary')}
      ${btn(`<i class="fa-solid fa-file-csv"></i> ${tx('تصدير', 'Export')}`, 'onclick="OW.wms.exportItems()"', 'secondary')}`)}
   ${controlPanel({
@@ -123,9 +123,9 @@ function render() {
             statusBadge(i.status || 'ACTIVE', i.status === 'INACTIVE' ? tx('غير نشط', 'Inactive') : tx('نشط', 'Active')),
             `<div class="o_actions_cell">
               <button class="o_btn o_btn_ghost o_btn_sm" data-view="${i.id}" title="${tx('تفاصيل', 'Details')}"><i class="fa-solid fa-eye"></i></button>
-              <button class="o_btn o_btn_ghost o_btn_sm" data-edit="${i.id}" title="${tx('تعديل', 'Edit')}"><i class="fa-solid fa-pen"></i></button>
+              ${canDatabasePermission('action:item:update') ? `<button class="o_btn o_btn_ghost o_btn_sm" data-edit="${i.id}" title="${tx('تعديل', 'Edit')}"><i class="fa-solid fa-pen"></i></button>` : ''}
               <button class="o_btn o_btn_ghost o_btn_sm" data-qr="${i.id}" title="QR"><i class="fa-solid fa-qrcode"></i></button>
-              ${isAdmin() ? `<button class="o_btn o_btn_ghost o_btn_sm" data-del="${i.id}" title="${tx('حذف', 'Delete')}"><i class="fa-solid fa-trash"></i></button>` : ''}
+              ${canDatabasePermission('action:item:delete') ? `<button class="o_btn o_btn_ghost o_btn_sm" data-del="${i.id}" title="${tx('حذف', 'Delete')}"><i class="fa-solid fa-trash"></i></button>` : ''}
             </div>`
           ]
         };
@@ -158,6 +158,11 @@ function reload() {
 /* ── item form ──────────────────────────────────────────────────────────── */
 
 function itemModal(id = null) {
+  const permission = id ? 'action:item:update' : 'action:item:create';
+  if (!canDatabasePermission(permission)) {
+    toast(tx('لا تملك صلاحية تنفيذ هذا الإجراء.', 'You are not authorized to perform this action.'), 'error');
+    return;
+  }
   const it = id ? store.byId('items', id) : {};
   const catOpts = categories().map(c => ({ value: c.id, label: c.name }));
   const units = store.get('units');
@@ -258,6 +263,10 @@ function itemModal(id = null) {
 }
 
 async function removeItem(id) {
+  if (!canDatabasePermission('action:item:delete')) {
+    toast(tx('لا تملك صلاحية حذف الأصناف.', 'You are not authorized to delete items.'), 'error');
+    return;
+  }
   const it = store.byId('items', id);
   if (!it) return;
   const qty = stockQty(id);
@@ -329,14 +338,14 @@ function openDetails(id) {
     title: `<i class="fa-solid fa-box"></i> ${tx('تفاصيل الصنف', 'Item details')}`,
     size: 'lg', body,
     footer: `<button class="o_btn o_btn_secondary" id="dQr"><i class="fa-solid fa-qrcode"></i> ${tx('ملصق QR', 'QR label')}</button>
-      <button class="o_btn o_btn_secondary" id="dIssue">${tx('صرف', 'Issue')}</button>
-      <button class="o_btn o_btn_secondary" id="dEdit">${tx('تعديل', 'Edit')}</button>
+      ${canDatabasePermission('action:transaction:issue:create') ? `<button class="o_btn o_btn_secondary" id="dIssue">${tx('صرف', 'Issue')}</button>` : ''}
+      ${canDatabasePermission('action:item:update') ? `<button class="o_btn o_btn_secondary" id="dEdit">${tx('تعديل', 'Edit')}</button>` : ''}
       <button class="o_btn o_btn_primary" id="dClose">${tx('إغلاق', 'Close')}</button>`,
     onMount: (el, close) => {
       el.querySelector('#dClose').onclick = close;
       el.querySelector('#dQr').onclick = () => printLabels([it]);
-      el.querySelector('#dIssue').onclick = () => { close(); OW.wms.newTx('ISSUE'); };
-      el.querySelector('#dEdit').onclick = () => { close(); itemModal(id); };
+      el.querySelector('#dIssue')?.addEventListener('click', () => { close(); OW.wms.newTx('ISSUE'); });
+      el.querySelector('#dEdit')?.addEventListener('click', () => { close(); itemModal(id); });
     }
   });
 }

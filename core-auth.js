@@ -218,9 +218,15 @@ export async function signIn(email, password) {
   const user = data.user, authSession = data.session;
   const { data: profile, error: perr } = await c.from('profiles')
     .select('*').eq('id', user.id).maybeSingle();
-  if (perr) console.warn('[auth] profile read failed', perr);
+  if (perr || !profile) {
+    await c.auth.signOut().catch(() => {});
+    throw new Error(say(
+      'تعذّر التحقق من حالة الحساب وصلاحياته من الخادم. تحقق من الاتصال ثم أعد المحاولة.',
+      'Could not verify the account status and permissions with the server. Check the connection and retry.'
+    ));
+  }
 
-  const status = profile?.status || 'ACTIVE';
+  const status = String(profile.status || '').toUpperCase();
   if (status !== 'ACTIVE') {
     await c.auth.signOut().catch(() => {});
     throw new Error(say('الحساب غير نشط. راجع المدير.', 'This account is inactive. Contact your administrator.'));
@@ -291,9 +297,13 @@ export async function restoreSession() {
       if (s?.offline && s.id) { window.__session = { ...s, offline: true }; return window.__session; }
       return null;
     }
-    const { data: profile } = await c.from('profiles')
+    const { data: profile, error: profileError } = await c.from('profiles')
       .select('*').eq('id', data.session.user.id).maybeSingle();
-    if ((profile?.status || 'ACTIVE') !== 'ACTIVE') {
+    // A live Supabase token does not prove that the WMS profile is active.
+    // If the profile cannot be read, do not promote a cached profile to an
+    // online session; retain offline access only when there is an explicit
+    // locally verified session that can be restored by the offline path.
+    if (profileError || !profile || String(profile.status || '').toUpperCase() !== 'ACTIVE') {
       await c.auth.signOut().catch(() => {});
       clearSession();
       return null;
@@ -331,15 +341,15 @@ export async function ensureOnlineSession() {
     try {
       const result = await c.from('profiles').select('*').eq('id', current.id).maybeSingle();
       if (!result.error) profile = result.data;
-    } catch (_) { /* cached profile remains usable */ }
+    } catch (_) { /* do not promote without authoritative profile data */ }
 
-    const sourceProfile = profile || current.profile || {};
-    const status = String(sourceProfile.status || 'ACTIVE').toUpperCase();
-    if (status !== 'ACTIVE') {
+    // Cached profile data is suitable for offline display only, never proof
+    // that an account is still active or still has the same permissions.
+    if (!profile || String(profile.status || '').toUpperCase() !== 'ACTIVE') {
       await c.auth.signOut().catch(() => {});
       return null;
     }
-    const session = buildSession(data.session.user, sourceProfile, {
+    const session = buildSession(data.session.user, profile, {
       access_token: data.session.access_token
     });
     window.__session = session;

@@ -3,7 +3,7 @@
 // ----------------------------------------------------------------------------
 // General system flags, users & roles, permission matrix, units/conversions,
 // item categories, local cache tools, and live server snapshot / restore.
-// All writes go through the store → Supabase (or the offline master queue).
+// All writes go through guarded store mutations and require a live server connection.
 // ============================================================================
 import { OW } from './core-registry.js';
 import { tx, friendlyError } from './core-i18n.js';
@@ -21,7 +21,10 @@ import {
   createUnitConversion, updateUnitConversion, deleteUnitConversion,
   createCategory, updateCategory, deleteCategory
 } from './core-api-supabase.js';
-import { canManageSettings, isAdmin, can, role as userRole } from './core-rbac.js';
+import {
+  canManageSettings, canManageSystemSettings, canAdministerProfiles,
+  canAccessWarehouse, isAdmin, can, role as userRole
+} from './core-rbac.js';
 import { rpc } from './core-supabase.js';
 import {
   roleLabel, statusLabel, fmtDateTime, fmtNum, todayISO,
@@ -39,7 +42,12 @@ const F = {
   },
   backup: {
     busy: false, fileName: '', fileSize: 0, snapshot: null, summary: null
-  }
+  },
+  authorizationGrants: [],
+  authorizationDecisions: [],
+  authorizationLoaded: false,
+  authorizationLoading: false,
+  authorizationError: ''
 };
 
 const LIVE_BACKUP_META = 'orshap_live_backup_meta_v1';
@@ -147,10 +155,6 @@ const IMPORT_TRUE = new Set(['true', '1', 'yes', 'y', 'active', 'نشط', 'نش�
 const IMPORT_FALSE = new Set(['false', '0', 'no', 'n', 'inactive', 'غيرنشط', 'غيرنشطة', 'لا', 'معطل', 'معطلة']);
 
 const FLAGS = [
-  { key: 'REQUIRE_APPROVAL', def: true,
-    ar: ['طلب اعتماد المعاملات', 'Require transaction approval'],
-    descAr: 'عند التعطيل تُعتمد معاملات الأدوار العليا تلقائيًا عند الحفظ.',
-    descEn: 'When disabled, elevated roles auto-approve transactions on save.' },
   { key: 'USE_UNIT_CONVERSION', def: true,
     ar: ['تفعيل تحويل الوحدات', 'Enable unit conversion'],
     descAr: 'السماح بإدخال الكميات بوحدات الشراء والتحويل إلى الوحدة الأساسية.',
@@ -171,12 +175,36 @@ const FALLBACK_PERMISSIONS = [
   'action:stock_transfer:create', 'action:stock_transfer:view',
   'action:stocktake:start', 'action:stocktake:count', 'action:stocktake:submit',
   'action:stocktake:approve', 'action:stocktake:settle', 'action:stocktake:close',
-  'action:stocktake:view_system_qty', 'action:settings:manage'
+  'action:stocktake:view_system_qty', 'action:settings:manage',
+  'action:chat:manage', 'action:transaction:opening_balance:create',
+  'table:inventory_ledger:view', 'table:transaction_ledger:view', 'table:audit_logs:view'
 ];
 
 /* ── small helpers ───────────────────────────────────────────────────────── */
 
 function canManage() { return canManageSettings(); }
+
+function canManageImportEntity(entity, action = 'create', existing = null, row = null) {
+  if (entity === 'warehouses') {
+    if (action === 'create') {
+      const assigned = window.__session?.profile?.assigned_warehouse_ids;
+      return userRole() === 'SUPER_ADMIN'
+        || (Array.isArray(assigned) && assigned.length === 0 && can('action:warehouse:manage'));
+    }
+    return can('action:warehouse:manage')
+      && (!existing || canAccessWarehouse(existing.id));
+  }
+  if (entity === 'storage_areas' || entity === 'shelves') {
+    const warehouseId = existing?.warehouse_id || row?._warehouse_id || null;
+    return can('action:facility:manage')
+      && (!warehouseId || canAccessWarehouse(warehouseId));
+  }
+  if (entity === 'items') {
+    return can(action === 'update' ? 'action:item:update' : 'action:item:create');
+  }
+  return false;
+}
+
 function flagValue(flag) {
   const v = setting(flag.key, flag.def);
   if (v === false || v === 'false' || v === 0 || v === '0') return false;
@@ -228,16 +256,20 @@ function render() {
       { value: 'general', label: tx('عام', 'General') },
       { value: 'users', label: tx('المستخدمون', 'Users'), count: store.get('profiles').length },
       { value: 'roles', label: tx('مصفوفة الصلاحيات', 'Permission matrix'), count: store.get('role_permissions').length },
+      { value: 'authorization', label: tx('التفويض المتقدم', 'Advanced authorization'), count: F.authorizationGrants.filter(g => !g.revoked_at).length },
       { value: 'units', label: tx('الوحدات والتحويلات', 'Units & conversions'), count: store.get('units').length },
       { value: 'categories', label: tx('تصنيفات الأصناف', 'Item categories'), count: store.get('item_categories').length },
       { value: 'import', label: tx('استيراد البيانات', 'Data import') },
       { value: 'data', label: tx('البيانات والنسخ', 'Data & backup') }
     ].map(t => ({ ...t, onclick: `OW.wms.settingsTab('${t.value}')` })), F.tab)}
-    ${F.tab === 'general' ? renderGeneral(banned)
-      : F.tab === 'users' ? renderUsers(banned)
-      : F.tab === 'roles' ? renderRoles(banned)
-      : F.tab === 'units' ? renderUnits(banned)
-      : F.tab === 'categories' ? renderCategories(banned)
+    ${F.tab === 'general' ? `${!canManageSystemSettings() ? alertBox(tx('تعديل أعلام النظام يتطلب منحة صريحة لصلاحية إدارة الإعدادات.', 'System settings require an explicit settings-management grant.'), 'warning') : ''}${renderGeneral(banned || !canManageSystemSettings())}`
+      : F.tab === 'users' ? `${!canAdministerProfiles() ? alertBox(tx('إدارة ملفات المستخدمين متاحة للمسؤول الأعلى فقط.', 'Profile administration is restricted to SUPER_ADMIN. Database authorization remains authoritative.'), 'warning') : ''}${renderUsers(banned || !canAdministerProfiles())}`
+      : F.tab === 'roles' ? `${!canAdministerProfiles() ? alertBox(tx('إدارة صلاحيات الأدوار متاحة للمسؤول الأعلى فقط.', 'Role-permission administration is restricted to SUPER_ADMIN.'), 'warning') : ''}${renderRoles(banned || !canAdministerProfiles())}`
+      : F.tab === 'authorization' ? (canAdministerProfiles()
+        ? renderAuthorization(banned)
+        : alertBox(tx('إدارة التفويض المتقدم متاحة للمسؤول الأعلى فقط.', 'Advanced authorization administration is restricted to SUPER_ADMIN.'), 'warning'))
+      : F.tab === 'units' ? `${!canManageSystemSettings() ? alertBox(tx('إدارة الوحدات والتحويلات تتطلب منحة صريحة لصلاحية إدارة الإعدادات.', 'Unit and conversion administration requires an explicit settings-management grant.'), 'warning') : ''}${renderUnits(banned || !canManageSystemSettings())}`
+      : F.tab === 'categories' ? renderCategories()
       : F.tab === 'import' ? renderImport(banned)
       : renderData(banned)}
   </div>`;
@@ -245,24 +277,26 @@ function render() {
 
 function renderGeneral(banned) {
   const q = queueSnapshot();
+  const canWrite = !banned && navigator.onLine && !window.__session?.offline;
   return `
     <div class="o_grid" style="grid-template-columns:1.4fr 1fr">
       ${card(`<i class="fa-solid fa-sliders"></i> ${tx('أعلام النظام', 'System flags')}`,
-        `<div class="o_setting_list">
+        `${alertBox(tx('لا يمنح الدور أو الإعداد العام حق اعتماد السند الذي أنشأه المستخدم. الاعتماد الذاتي يتطلب تفويضاً فردياً صريحاً وتفعيل السماح بالاعتماد الذاتي في ملف المستخدم.', 'A role or global setting does not grant permission to approve a voucher created by the same user. Self-approval requires an explicit user-scoped delegation and the user profile self-approval flag.'), 'info')}
+        <div class="o_setting_list">
           ${FLAGS.map(f => {
             const on = flagValue(f);
             return `<div class="o_setting_row">
               <div><b>${f.ar[0] && (tx(f.ar[0], f.ar[1]))}</b>
                 <p>${tx(f.descAr, f.descEn)}</p></div>
               <label class="o_switch">
-                <input type="checkbox" data-flag="${f.key}" ${on ? 'checked' : ''} ${banned ? 'disabled' : ''}>
+                <input type="checkbox" data-flag="${f.key}" ${on ? 'checked' : ''} ${canWrite ? '' : 'disabled'}>
                 <span class="o_switch_slider"></span>
               </label>
             </div>`;
           }).join('')}
         </div>
-        <p class="o_hint" style="margin-top:10px">${tx('تُحفظ الأعلام فورًا وتعمل دون اتصال عبر قائمة المزامنة.',
-          'Flags save immediately and queue offline through the master queue.')}</p>`)}
+        <p class="o_hint" style="margin-top:10px">${tx('تعديل أعلام النظام يتطلب اتصالًا مباشرًا بالخادم.',
+          'System flag changes require a live server connection.')}</p>`)}
       ${card(`<i class="fa-solid fa-heart-pulse"></i> ${tx('حالة النظام', 'System health')}`,
         `<dl class="o_kv">
           <dt>${tx('المستخدم', 'User')}</dt><dd>${window.__session?.name || '—'}</dd>
@@ -292,11 +326,12 @@ function renderGeneral(banned) {
 }
 
 function renderUsers(banned) {
+  const canWrite = !banned && navigator.onLine && !window.__session?.offline;
   const users = [...store.get('profiles')].sort((a, b) => String(a.name || a.email).localeCompare(String(b.name || b.email)));
   return card('', table(
     [{ label: tx('المستخدم', 'User') }, { label: tx('البريد', 'Email') }, { label: tx('الدور', 'Role') },
      { label: tx('الحالة', 'Status') }, { label: tx('المستودعات', 'Warehouses'), num: true },
-     { label: tx('صلاحيات مخصصة', 'Custom perms'), num: true }, { label: tx('إجراءات', 'Actions') }],
+     { label: tx('إجراءات', 'Actions') }],
     users.map(u => ({
       cells: [
         `<span class="o_cell_main">${u.name || '—'}</span><div class="o_cell_sub">${String(u.id).slice(0, 8)}</div>`,
@@ -304,18 +339,18 @@ function renderUsers(banned) {
         badge(roleLabel(u.role), u.role === 'SUPER_ADMIN' ? 'purple' : u.role === 'CLERK' ? 'gray' : 'blue'),
         badge(u.status ? statusLabel(u.status) : '—', (u.status || '') === 'ACTIVE' ? 'green' : 'red'),
         fmtNum((u.assigned_warehouse_ids || []).length),
-        fmtNum((u.custom_permissions || []).length),
         `<div class="o_actions_cell">
-          ${banned ? '' : `<button class="o_btn o_btn_ghost o_btn_sm" data-user="${u.id}" title="${tx('تعديل', 'Edit')}"><i class="fa-solid fa-pen"></i></button>`}
+          ${canWrite ? `<button class="o_btn o_btn_ghost o_btn_sm" data-user="${u.id}" title="${tx('تعديل', 'Edit')}"><i class="fa-solid fa-pen"></i></button>` : ''}
         </div>`
       ]
     })),
     { emptyTitle: tx('لا يوجد مستخدمون', 'No users') }
-  ), `<button class="o_btn o_btn_primary o_btn_sm" onclick="OW.wms.linkUser()" ${banned ? 'disabled' : ''}>
+  ), `<button class="o_btn o_btn_primary o_btn_sm" onclick="OW.wms.linkUser()" ${canWrite ? '' : 'disabled'}>
         <i class="fa-solid fa-user-plus"></i> ${tx('ربط مستخدم', 'Link user')}</button>`, 'flush-body');
 }
 
 function renderRoles(banned) {
+  const canWrite = !banned && navigator.onLine && !window.__session?.offline;
   const perms = permCatalog().filter(p => {
     if (!F.permSearch) return true;
     const hay = [p.key, p.description, permissionLabel(p.key), permissionDescription(p.key, p.description)]
@@ -332,27 +367,114 @@ function renderRoles(banned) {
   return `
     <div class="o_perm_bar">
       <select class="o_filter_select" id="permRole">
-        ${ROLES.map(r => `<option value="${r}" ${F.role === r ? 'selected' : ''}>${roleLabel(r)}</option>`).join('')}
+        ${ROLES.filter(r => r !== 'SUPER_ADMIN').map(r => `<option value="${r}" ${F.role === r ? 'selected' : ''}>${roleLabel(r)}</option>`).join('')}
       </select>
       <input class="o_filter_input" id="permSearch" placeholder="${tx('تصفية الصلاحيات…', 'Filter permissions…')}" value="${F.permSearch}">
       <button class="o_btn o_btn_ghost o_btn_sm" id="permAll">${tx('تحديد الكل', 'Select all')}</button>
       <button class="o_btn o_btn_ghost o_btn_sm" id="permNone">${tx('إلغاء الكل', 'Clear')}</button>
-      <button class="o_btn o_btn_primary o_btn_sm" id="permSave" ${banned ? 'disabled' : ''}>
+      <button class="o_btn o_btn_primary o_btn_sm" id="permSave" ${canWrite ? '' : 'disabled'}>
         <i class="fa-solid fa-floppy-disk"></i> ${tx('حفظ صلاحيات الدور', 'Save role permissions')}</button>
     </div>
+    ${alertBox(tx(
+      'صلاحيات الدور تُطبّق داخل نطاق مستودعاته الفعلي. تجاوز الطوارئ للمسؤول الأعلى فقط ولا يُدار من مصفوفة الأدوار.',
+      'Role grants apply only within the role/user effective warehouse scope. SUPER_ADMIN break-glass is not managed in the role matrix.'
+    ), 'info')}
     <div class="o_perm_groups">
       ${[...groups.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([g, list]) => `
         <div class="o_perm_group">
           <div class="o_perm_group_head"><b>${esc(permissionGroupLabel(g))}</b><span class="o_muted">${list.length}</span></div>
           ${list.map(p => `<label class="o_checkbox o_perm_item" title="${esc(permissionDescription(p.key, p.description))}">
-            <input type="checkbox" data-perm="${esc(p.key)}" ${active.has(p.key) ? 'checked' : ''} ${banned ? 'disabled' : ''}>
+            <input type="checkbox" data-perm="${esc(p.key)}" ${active.has(p.key) ? 'checked' : ''} ${canWrite ? '' : 'disabled'}>
             <span><b class="o_perm_label">${esc(permissionLabel(p.key))}</b><small>${esc(permissionDescription(p.key, p.description))}</small></span>
           </label>`).join('')}
         </div>`).join('')}
     </div>`;
 }
 
+function renderAuthorization(banned) {
+  const canWrite = !banned && canAdministerProfiles() && navigator.onLine && !window.__session?.offline;
+  if (F.authorizationLoading || (!F.authorizationLoaded && !F.authorizationError)) {
+    return card(tx('محرك التفويض المؤسسي', 'Institutional authorization engine'),
+      `<div class="o_empty"><i class="fa-solid fa-circle-notch fa-spin"></i><p>${tx('جارٍ تحميل سياسات التفويض وسجل القرارات…', 'Loading grants and authorization decisions…')}</p></div>`);
+  }
+  if (F.authorizationError) {
+    return card(tx('محرك التفويض المؤسسي', 'Institutional authorization engine'),
+      alertBox(esc(F.authorizationError), 'warning'),
+      `<button class="o_btn o_btn_secondary o_btn_sm" id="authReload">${tx('إعادة المحاولة', 'Retry')}</button>`);
+  }
+  const grants = F.authorizationGrants || [];
+  const decisions = F.authorizationDecisions || [];
+  const warehouseName = id => {
+    if (!id) return '—';
+    const w = store.byId('warehouses', id);
+    return w ? `${w.code || ''} — ${w.name || ''}` : String(id).slice(0, 8);
+  };
+  const actorName = id => {
+    if (!id) return '—';
+    const p = store.byId('profiles', id);
+    return p?.name || p?.email || String(id).slice(0, 8);
+  };
+  return `
+    <div class="o_stack">
+      ${card(`<i class="fa-solid fa-shield-halved"></i> ${tx('منح التفويض', 'Authorization grants')}`,
+        `<p class="o_hint">${tx('تتحكم المنحة في الإجراء والمورد والسجل والمستودع ونطاق الملكية أو شروط السياق ومدة الصلاحية. المنع الصريح يتغلب على السماح.', 'Each grant can constrain action, resource, record, warehouse, ownership/context conditions and validity. Explicit deny always overrides allow.')}</p>
+        ${table(
+          [
+            { label: tx('المستفيد', 'Subject') },
+            { label: tx('الإجراء', 'Action') },
+            { label: tx('المورد / السجل', 'Resource / record') },
+            { label: tx('المستودع', 'Warehouse') },
+            { label: tx('الأثر', 'Effect') },
+            { label: tx('النطاق', 'Scope') },
+            { label: tx('الصلاحية حتى', 'Valid until') },
+            { label: tx('الحالة', 'Status') },
+            { label: '', width: '76px' }
+          ],
+          grants.map(g => ({
+            cells: [
+              g.subject_type === 'ROLE' ? roleLabel(g.role_name) : actorName(g.user_id),
+              `<span class="o_cell_main">${esc(permissionLabel(g.permission_key))}</span><div class="o_cell_sub">${esc(g.permission_key)}</div>`,
+              `${esc(g.resource_type || '—')}${g.resource_id ? `<div class="o_cell_sub">${esc(g.resource_id)}</div>` : ''}`,
+              esc(warehouseName(g.warehouse_id)),
+              badge(g.effect, g.effect === 'DENY' ? 'red' : 'green'),
+              `${esc(g.scope_type)}${g.scope_type === 'CONTEXT' ? `<div class="o_cell_sub">${esc(JSON.stringify(g.conditions || {}))}</div>` : ''}`,
+              g.valid_until ? fmtDateTime(g.valid_until) : '—',
+              g.revoked_at ? badge(tx('ملغاة', 'Revoked'), 'red') : (new Date(g.valid_from) > new Date() ? badge(tx('مجدولة', 'Scheduled'), 'blue') : badge(tx('فعالة', 'Active'), 'green')),
+              !canWrite || g.revoked_at ? '' : `<button class="o_btn o_btn_ghost o_btn_sm" data-auth-revoke="${g.id}" title="${tx('إلغاء المنحة', 'Revoke grant')}" aria-label="${tx('إلغاء المنحة', 'Revoke grant')}"><i class="fa-solid fa-ban"></i></button>`
+            ]
+          })),
+          { emptyTitle: tx('لا توجد منح تفويض', 'No authorization grants') }
+        )}`,
+        `<button class="o_btn o_btn_primary o_btn_sm" id="authGrantAdd" ${canWrite ? '' : 'disabled'}><i class="fa-solid fa-plus"></i> ${tx('منحة جديدة', 'New grant')}</button>`, 'flush-body')}
+      ${card(`<i class="fa-solid fa-clipboard-list"></i> ${tx('سجل قرارات التفويض — آخر 30 يوماً', 'Authorization decisions — last 30 days')}`,
+        table(
+          [
+            { label: tx('التاريخ', 'Date') },
+            { label: tx('المستخدم', 'Actor') },
+            { label: tx('الإجراء', 'Action') },
+            { label: tx('المورد / السجل', 'Resource / record') },
+            { label: tx('المستودع', 'Warehouse') },
+            { label: tx('القرار', 'Decision') },
+            { label: tx('السبب', 'Reason') }
+          ],
+          decisions.map(d => ({
+            cells: [
+              fmtDateTime(d.created_at),
+              esc(actorName(d.actor_user_id)),
+              `<span class="o_cell_main">${esc(d.action_key)}</span>${d.break_glass ? `<div class="o_cell_sub">${badge(tx('تجاوز طارئ', 'Break-glass'), 'purple')}</div>` : ''}`,
+              `${esc(d.resource_type || '—')}${d.resource_id ? `<div class="o_cell_sub">${esc(d.resource_id)}</div>` : ''}`,
+              esc(warehouseName(d.warehouse_id)),
+              badge(d.decision, d.decision === 'DENY' ? 'red' : 'green'),
+              esc(d.decision_reason || '—')
+            ]
+          })),
+          { emptyTitle: tx('لا توجد قرارات مسجلة في الفترة المحددة', 'No decisions recorded in this period') }
+        ), '', 'flush-body')}
+    </div>`;
+}
+
 function renderUnits(banned) {
+  const canWrite = !banned && navigator.onLine && !window.__session?.offline;
   const units = [...store.get('units')].sort((a, b) => String(a.code).localeCompare(String(b.code)));
   const items = [...store.get('items')].sort((a, b) => String(a.code).localeCompare(String(b.code)));
   const allConvs = store.get('item_unit_conversions');
@@ -373,14 +495,14 @@ function renderUnits(banned) {
         table(
           [{ label: tx('الرمز', 'Code') }, { label: tx('الاسم', 'Name') }, { label: '', width: '80px' }],
           units.map(u => ({
-            cells: [u.code, u.name, banned ? '' : `<div class="o_actions_cell">
+            cells: [u.code, u.name, !canWrite ? '' : `<div class="o_actions_cell">
               <button class="o_btn o_btn_ghost o_btn_sm" data-unit="${u.id}"><i class="fa-solid fa-pen"></i></button>
               <button class="o_btn o_btn_ghost o_btn_sm" data-unit-del="${u.id}"><i class="fa-solid fa-trash"></i></button>
             </div>`]
           })),
           { emptyTitle: tx('لا توجد وحدات', 'No units') }
         ),
-        `<button class="o_btn o_btn_primary o_btn_sm" onclick="OW.wms.unitModal()" ${banned ? 'disabled' : ''}>
+        `<button class="o_btn o_btn_primary o_btn_sm" onclick="OW.wms.unitModal()" ${canWrite ? '' : 'disabled'}>
           <i class="fa-solid fa-plus"></i> ${tx('وحدة', 'Unit')}</button>`, 'flush-body')}
       ${card(`<i class="fa-solid fa-arrows-left-right"></i> ${tx('تحويلات الأصناف', 'Item conversions')}`,
         `${conversionWarning}
@@ -393,7 +515,7 @@ function renderUnits(banned) {
             return {
               cells: [esc(itemNameOnly(c.item_id)), esc(base), esc(c.unit_code), fmtNum(c.factor_to_base),
                 esc(`1 ${c.unit_code} = ${fmtNum(c.factor_to_base)} ${base}`),
-                banned ? '' : `<div class="o_actions_cell">
+                !canWrite ? '' : `<div class="o_actions_cell">
                 <button class="o_btn o_btn_ghost o_btn_sm" data-conv="${c.id}"><i class="fa-solid fa-pen"></i></button>
                 <button class="o_btn o_btn_ghost o_btn_sm" data-conv-del="${c.id}"><i class="fa-solid fa-trash"></i></button>
               </div>`]
@@ -401,12 +523,16 @@ function renderUnits(banned) {
           }),
           { emptyTitle: tx('لا توجد تحويلات', 'No conversions') }
         )}`,
-        `<button class="o_btn o_btn_primary o_btn_sm" onclick="OW.wms.convModal()" ${banned ? 'disabled' : ''}>
+        `<button class="o_btn o_btn_primary o_btn_sm" onclick="OW.wms.convModal()" ${canWrite ? '' : 'disabled'}>
           <i class="fa-solid fa-plus"></i> ${tx('تحويل', 'Conversion')}</button>`, 'flush-body')}
     </div>`;
 }
 
-function renderCategories(banned) {
+function renderCategories() {
+  const live = navigator.onLine && !window.__session?.offline;
+  const canCreate = can('action:item:create') && live;
+  const canUpdate = can('action:item:update') && live;
+  const canDelete = can('action:item:delete') && live;
   const cats = [...store.get('item_categories')].sort((a, b) => String(a.code || a.name).localeCompare(String(b.code || b.name)));
   const counts = new Map();
   for (const i of store.get('items')) counts.set(i.category_id, (counts.get(i.category_id) || 0) + 1);
@@ -417,13 +543,13 @@ function renderCategories(banned) {
       cells: [c.code || '—', `<span class="o_cell_main">${c.name || '—'}</span>`, c.description || '—',
         fmtNum(counts.get(c.id) || 0),
         c.is_active === false ? badge(tx('غير نشط', 'Inactive'), 'red') : badge(tx('نشط', 'Active'), 'green'),
-        banned ? '' : `<div class="o_actions_cell">
-          <button class="o_btn o_btn_ghost o_btn_sm" data-cat="${c.id}"><i class="fa-solid fa-pen"></i></button>
-          <button class="o_btn o_btn_ghost o_btn_sm" data-cat-del="${c.id}"><i class="fa-solid fa-trash"></i></button>
-        </div>`]
+        canUpdate || canDelete ? `<div class="o_actions_cell">
+          ${canUpdate ? `<button class="o_btn o_btn_ghost o_btn_sm" data-cat="${c.id}"><i class="fa-solid fa-pen"></i></button>` : ''}
+          ${canDelete ? `<button class="o_btn o_btn_ghost o_btn_sm" data-cat-del="${c.id}"><i class="fa-solid fa-trash"></i></button>` : ''}
+        </div>` : '']
     })),
     { emptyTitle: tx('لا توجد تصنيفات', 'No categories') }
-  ), `<button class="o_btn o_btn_primary o_btn_sm" onclick="OW.wms.categoryModal()" ${banned ? 'disabled' : ''}>
+  ), `<button class="o_btn o_btn_primary o_btn_sm" onclick="OW.wms.categoryModal()" ${canCreate ? '' : 'disabled'}>
         <i class="fa-solid fa-plus"></i> ${tx('تصنيف', 'Category')}</button>`, 'flush-body');
 }
 
@@ -830,7 +956,10 @@ function refreshImportMappingState(main) {
     if (text) text.textContent = missing.map(importFieldLabel).join(tx('، ', ', '));
   }
   const apply = main.querySelector('#importApply');
-  if (apply) apply.disabled = !!missing.length || F.import.busy;
+  if (apply) apply.disabled = !!missing.length || F.import.busy
+    || (!canManageImportEntity(F.import.entity, 'create')
+      && !(F.import.updateExisting && canManageImportEntity(F.import.entity, 'update')))
+    || !navigator.onLine || !!window.__session?.offline;
   const mapped = def.fields.filter(f => F.import.mapping[f.key]).length;
   const count = main.querySelector('#importMappedCount');
   if (count) count.textContent = `${mapped}/${def.fields.length}`;
@@ -847,8 +976,13 @@ async function applyImport() {
   }
   const def = IMPORT_ENTITIES[x.entity];
   if (!def) return;
-  if (!canManage()) {
-    toast(tx('ليست لديك صلاحية استيراد البيانات.', 'You do not have permission to import data.'), 'error');
+  if (!canManageImportEntity(x.entity, 'create')
+      && !(x.updateExisting && canManageImportEntity(x.entity, 'update'))) {
+    toast(tx('لا تملك صلاحية إنشاء أو تحديث هذا النوع من البيانات.', 'You do not have the required create/update permission for this data type.'), 'error');
+    return;
+  }
+  if (!navigator.onLine || window.__session?.offline) {
+    toast(tx('استيراد البيانات يتطلب اتصالًا مباشرًا بالخادم.', 'Data import requires a live server connection.'), 'warning');
     return;
   }
 
@@ -893,6 +1027,21 @@ async function applyImport() {
 
   if (errors.length) {
     F.import.result = { ok: false, created: 0, updated: 0, skipped: 0, errors, warnings: [] };
+    reload();
+    return;
+  }
+
+  const deniedRow = prepared.find(row => {
+    const existing = importFindExisting(x.entity, row);
+    if (existing && !x.updateExisting) return false;
+    return !canManageImportEntity(x.entity, existing ? 'update' : 'create', existing, row);
+  });
+  if (deniedRow) {
+    F.import.result = {
+      ok: false, created: 0, updated: 0, skipped: 0,
+      errors: [`${tx('الصف', 'Row')} ${deniedRow._row}: ${tx('لا تملك صلاحية العملية المطلوبة أو أن السجل خارج نطاق مستودعاتك.', 'You lack the required operation permission or the record is outside your warehouse scope.')}`],
+      warnings: []
+    };
     reload();
     return;
   }
@@ -975,6 +1124,9 @@ function renderImport(banned) {
   const mappedCount = fields.filter(f => x.mapping[f.key]).length;
   const missing = fields.filter(f => f.required && !x.mapping[f.key]);
   const can = !banned;
+  const entityPermission = canManageImportEntity(x.entity, 'create')
+    || (x.updateExisting && canManageImportEntity(x.entity, 'update'));
+  const canWrite = can && entityPermission && navigator.onLine && !window.__session?.offline;
   const previewHeaders = x.headers.slice(0, 8);
   const previewRows = x.rows.slice(0, 5);
 
@@ -995,6 +1147,10 @@ function renderImport(banned) {
 
     ${banned ? alertBox(tx('ليست لديك صلاحية استيراد البيانات. العرض للقراءة فقط.',
       'You do not have permission to import data. Read-only view.'), 'warning') : ''}
+    ${!banned && !entityPermission ? alertBox(tx('لا تملك صلاحية إنشاء أو تحديث نوع البيانات المحدد. ستظل المعاينة متاحة دون تنفيذ الاستيراد.',
+      'You do not have the create/update permission for this data type. Preview remains available, but import is disabled.'), 'warning') : ''}
+    ${!banned && entityPermission && !canWrite ? alertBox(tx('يمكن تجهيز الملف وربط الأعمدة دون اتصال، لكن حفظ البيانات يتطلب اتصالًا مباشرًا بالخادم.',
+      'You can prepare the file and map its columns offline, but saving requires a live server connection.'), 'warning') : ''}
 
     <div class="o_import_entities">
       ${Object.entries(IMPORT_ENTITIES).map(([key, entity]) => `<button type="button"
@@ -1109,7 +1265,7 @@ function renderImport(banned) {
         <div class="o_import_footer">
           <span class="o_muted">${fmtNum(x.rows.length)} ${tx('صف جاهز', 'rows ready')} · <span id="importMappedFooter">${mappedCount} ${tx('حقل مربوط', 'fields mapped')}</span></span>
           <button type="button" class="o_btn o_btn_primary" id="importApply" onclick="OW.wms.importApply()"
-            ${can && !missing.length && !x.busy ? '' : 'disabled'}>
+            ${canWrite && !missing.length && !x.busy ? '' : 'disabled'}>
             ${x.busy ? '<span class="o_spinner" style="width:14px;height:14px;border-width:2px"></span>' : '<i class="fa-solid fa-file-import"></i>'}
             ${x.busy ? tx('جارٍ الاستيراد…', 'Importing…') : tx('استيراد البيانات', 'Import data')}
           </button>
@@ -1268,6 +1424,14 @@ function bind(_, main) {
   if (none) none.onclick = () => main.querySelectorAll('[data-perm]').forEach(c => { if (!c.disabled) c.checked = false; });
   const save = main.querySelector('#permSave');
   if (save) save.onclick = async () => {
+    if (!canAdministerProfiles()) {
+      toast(tx('إدارة صلاحيات الأدوار متاحة للمسؤول الأعلى فقط.', 'Only SUPER_ADMIN may administer role permissions.'), 'error');
+      return;
+    }
+    if (!navigator.onLine || window.__session?.offline) {
+      toast(tx('تعديل صلاحيات الأدوار يتطلب اتصالًا مباشرًا بالخادم.', 'Role permission changes require a live server connection.'), 'warning');
+      return;
+    }
     const keys = [...main.querySelectorAll('[data-perm]')].filter(c => c.checked).map(c => c.dataset.perm);
     if (!await confirmDialog({
       title: tx('حفظ صلاحيات الدور', 'Save role permissions'),
@@ -1327,11 +1491,211 @@ function bind(_, main) {
 
   const importUpdate = main.querySelector('#importUpdateExisting');
   if (importUpdate) importUpdate.onchange = () => { F.import.updateExisting = importUpdate.checked; };
+
+  const authReload = main.querySelector('#authReload');
+  if (authReload) authReload.onclick = () => { F.authorizationLoaded = false; F.authorizationError = ''; reload(); };
+  const authGrantAdd = main.querySelector('#authGrantAdd');
+  if (authGrantAdd) authGrantAdd.onclick = authorizationGrantModal;
+  main.querySelectorAll('[data-auth-revoke]').forEach(button => {
+    button.onclick = () => revokeAuthorizationGrant(button.dataset.authRevoke);
+  });
+
+  if (F.tab === 'authorization' && canAdministerProfiles() && !F.authorizationLoaded && !F.authorizationLoading) {
+    F.authorizationLoading = true;
+    Promise.all([
+      rpc('admin_list_authorization_grants', {
+        p_subject_type: null, p_role_name: null, p_user_id: null, p_active_only: false, p_limit: 500
+      }),
+      rpc('admin_list_authorization_decisions', {
+        p_since: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+        p_actor_user_id: null, p_limit: 250
+      })
+    ]).then(([grants, decisions]) => {
+      F.authorizationGrants = Array.isArray(grants) ? grants : [];
+      F.authorizationDecisions = Array.isArray(decisions) ? decisions : [];
+      F.authorizationError = '';
+    }).catch(error => {
+      F.authorizationError = String(error?.message || error);
+    }).finally(() => {
+      F.authorizationLoading = false;
+      F.authorizationLoaded = true;
+      if (F.tab === 'authorization') reload();
+    });
+  }
 }
 
 /* ── user editing ────────────────────────────────────────────────────────── */
 
+function authorizationGrantModal() {
+  if (!canAdministerProfiles() || !navigator.onLine || window.__session?.offline) {
+    toast(tx('إدارة التفويض تتطلب صلاحية المسؤول الأعلى واتصالاً مباشراً.', 'Grant administration requires SUPER_ADMIN and a live connection.'), 'warning');
+    return;
+  }
+  const users = store.get('profiles').filter(p => p.status === 'ACTIVE');
+  const permissions = permCatalog();
+  const warehouses = store.get('warehouses');
+  const body = `<form id="authorizationGrantForm" class="o_form_grid">
+    <div class="o_field"><label>${tx('نوع المستفيد', 'Subject type')}</label>
+      <select name="subject_type" id="authSubjectType"><option value="USER">${tx('مستخدم', 'User')}</option><option value="ROLE">${tx('دور', 'Role')}</option></select></div>
+    <div class="o_field" id="authUserWrap"><label>${tx('المستخدم', 'User')}</label>
+      <select name="user_id">${users.map(u => `<option value="${esc(u.id)}">${esc(u.name || u.email || u.id)} — ${esc(roleLabel(u.role))}</option>`).join('')}</select></div>
+    <div class="o_field" id="authRoleWrap" style="display:none"><label>${tx('الدور', 'Role')}</label>
+      <select name="role_name">${ROLES.filter(r => r !== 'SUPER_ADMIN').map(r => `<option value="${r}">${esc(roleLabel(r))}</option>`).join('')}</select></div>
+    <div class="o_field full"><label>${tx('الصلاحية', 'Permission')}</label>
+      <select name="permission_key" required>${permissions.map(p => `<option value="${esc(p.key)}">${esc(permissionLabel(p.key))} — ${esc(p.key)}</option>`).join('')}</select></div>
+    <div class="o_field"><label>${tx('الأثر', 'Effect')}</label>
+      <select name="effect"><option value="ALLOW">${tx('سماح', 'Allow')}</option><option value="DENY">${tx('منع', 'Deny')}</option></select></div>
+    <div class="o_field"><label>${tx('نوع المورد', 'Resource type')}</label><input name="resource_type" placeholder="transaction / stocktake_session / stock_transfer / stock_transfer_order"></div>
+    <div class="o_field"><label>${tx('معرّف السجل (اختياري)', 'Resource record ID (optional)')}</label><input name="resource_id" placeholder="UUID"></div>
+    <div class="o_field"><label>${tx('المستودع', 'Warehouse')}</label>
+      <select name="warehouse_id"><option value="">— ${tx('كل المستودعات ضمن نطاق المستخدم', 'All warehouses within user scope')} —</option>${warehouses.map(w => `<option value="${esc(w.id)}">${esc(w.code || '')} — ${esc(w.name || '')}</option>`).join('')}</select></div>
+    <div class="o_field"><label>${tx('نطاق البيانات', 'Data scope')}</label>
+      <select name="scope_type" id="authScopeType">
+        <option value="WAREHOUSE" selected>WAREHOUSE</option><option value="OWN">OWN</option><option value="CONTEXT">CONTEXT</option><option value="ALL">ALL</option>
+      </select></div>
+    <div class="o_field full"><label>${tx('شروط السياق JSON (لنطاق CONTEXT)', 'Context conditions JSON (for CONTEXT scope)')}</label>
+      <textarea name="conditions" rows="3" placeholder='{"status":"PENDING_APPROVAL"}'></textarea></div>
+    <div class="o_field"><label>${tx('تاريخ الانتهاء (إلزامي لمنح المستخدم)', 'Expiry date (required for user grants)')}</label><input type="datetime-local" name="valid_until"></div>
+    <div class="o_field full"><label>${tx('سبب منح التفويض', 'Grant reason')}</label><textarea name="reason" required rows="2"></textarea></div>
+  </form>`;
+  modal({
+    title: `<i class="fa-solid fa-shield-halved"></i> ${tx('إنشاء منحة تفويض', 'Create authorization grant')}`,
+    size: 'lg', body,
+    footer: `<button class="o_btn o_btn_secondary" id="authGrantCancel">${tx('إلغاء', 'Cancel')}</button>
+      <button class="o_btn o_btn_primary" id="authGrantSave">${tx('حفظ المنحة', 'Save grant')}</button>`,
+    onMount: (el, close) => {
+      const form = el.querySelector('#authorizationGrantForm');
+      const subjectType = form.querySelector('#authSubjectType');
+      const scopeSelect = form.querySelector('#authScopeType');
+      const warehouseSelect = form.querySelector('[name="warehouse_id"]');
+      const resourceTypeInput = form.querySelector('[name="resource_type"]');
+      const validUntilInput = form.querySelector('[name="valid_until"]');
+      const permissionSelect = form.querySelector('[name="permission_key"]');
+      const resourceTypeForPermission = key => {
+        if (key.startsWith('action:transaction:')) return 'transaction';
+        if (key.startsWith('action:stocktake:')) return 'stocktake_session';
+        if (key === 'action:stock_transfer:create') return 'stock_transfer_order';
+        if (key.startsWith('action:stock_transfer:')) return 'stock_transfer';
+        return '';
+      };
+      const syncSubject = () => {
+        const isUserGrant = subjectType.value === 'USER';
+        form.querySelector('#authUserWrap').style.display = isUserGrant ? '' : 'none';
+        form.querySelector('#authRoleWrap').style.display = isUserGrant ? 'none' : '';
+        const allOption = scopeSelect.querySelector('option[value="ALL"]');
+        allOption.disabled = isUserGrant;
+        if (isUserGrant && scopeSelect.value === 'ALL') scopeSelect.value = 'WAREHOUSE';
+        if (!isUserGrant && scopeSelect.value === 'WAREHOUSE' && !warehouseSelect.value) scopeSelect.value = 'ALL';
+        [...permissionSelect.options].forEach(option => {
+          const supported = !!resourceTypeForPermission(option.value);
+          option.hidden = isUserGrant && !supported;
+          option.disabled = isUserGrant && !supported;
+        });
+        if (isUserGrant && !resourceTypeForPermission(permissionSelect.value)) {
+          const firstSupported = [...permissionSelect.options].find(option => !!resourceTypeForPermission(option.value));
+          if (firstSupported) permissionSelect.value = firstSupported.value;
+        }
+        resourceTypeInput.value = isUserGrant ? resourceTypeForPermission(permissionSelect.value) : resourceTypeInput.value;
+        resourceTypeInput.readOnly = isUserGrant;
+        resourceTypeInput.required = isUserGrant;
+        resourceTypeInput.placeholder = isUserGrant
+          ? 'transaction / stocktake_session / stock_transfer / stock_transfer_order'
+          : 'Optional for global role grants';
+        warehouseSelect.required = isUserGrant || scopeSelect.value === 'WAREHOUSE';
+        validUntilInput.required = isUserGrant;
+        warehouseSelect.disabled = !isUserGrant && scopeSelect.value === 'ALL';
+      };
+      subjectType.onchange = syncSubject;
+      permissionSelect.onchange = syncSubject;
+      scopeSelect.onchange = syncSubject;
+      syncSubject();
+      el.querySelector('#authGrantCancel').onclick = close;
+      el.querySelector('#authGrantSave').onclick = async () => {
+        const data = Object.fromEntries(new FormData(form).entries());
+        if (!data.reason.trim()) {
+          toast(tx('سبب المنح مطلوب.', 'A grant reason is required.'), 'warning');
+          return;
+        }
+        let conditions = {};
+        try {
+          if (data.conditions.trim()) conditions = JSON.parse(data.conditions);
+          if (!conditions || Array.isArray(conditions) || typeof conditions !== 'object') throw new Error('JSON must be an object');
+        } catch (error) {
+          toast(tx('شروط السياق يجب أن تكون كائن JSON صالحاً.', 'Context conditions must be a valid JSON object.'), 'error');
+          return;
+        }
+        const resourceId = data.resource_id.trim() || null;
+        if (data.subject_type === 'USER'
+            && (data.scope_type === 'ALL' || !data.warehouse_id || !data.resource_type.trim())) {
+          toast(tx('منحة المستخدم تتطلب نوع مورد ومستودعاً واحداً ونطاق بيانات محدداً وتاريخ انتهاء.', 'A user grant requires a resource type, one warehouse, a bounded data scope and an expiry date.'), 'warning');
+          return;
+        }
+        if (resourceId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(resourceId)) {
+          toast(tx('معرّف السجل ليس UUID صالحاً.', 'Resource record ID is not a valid UUID.'), 'error');
+          return;
+        }
+        const save = el.querySelector('#authGrantSave');
+        save.disabled = true;
+        try {
+          await rpc('admin_create_authorization_grant_v2', {
+            p_subject_type: data.subject_type,
+            p_role_name: data.subject_type === 'ROLE' ? data.role_name : null,
+            p_user_id: data.subject_type === 'USER' ? data.user_id : null,
+            p_permission_key: data.permission_key,
+            p_effect: data.effect,
+            p_resource_type: data.resource_type.trim() || null,
+            p_resource_id: resourceId,
+            p_warehouse_id: data.warehouse_id || null,
+            p_scope_type: data.scope_type,
+            p_conditions: conditions,
+            p_valid_from: new Date().toISOString(),
+            p_valid_until: data.valid_until ? new Date(data.valid_until).toISOString() : null,
+            p_reason: data.reason.trim()
+          });
+          close();
+          F.authorizationLoaded = false;
+          toast(tx('تم إنشاء منحة التفويض وتسجيلها في سجل التدقيق.', 'Authorization grant created and audited.'), 'success');
+          reload();
+        } catch (error) {
+          toast(String(error?.message || error), 'error');
+        } finally { save.disabled = false; }
+      };
+    }
+  });
+}
+
+async function revokeAuthorizationGrant(id) {
+  if (!canAdministerProfiles() || !navigator.onLine || window.__session?.offline) return;
+  const reason = await promptDialog({
+    title: tx('إلغاء منحة التفويض', 'Revoke authorization grant'),
+    label: tx('اكتب سبب إلغاء المنحة. سيُحفظ السبب في سجل التدقيق.', 'Enter the reason for revoking this grant. The reason is written to the audit log.'),
+    placeholder: tx('سبب الإلغاء', 'Revocation reason'),
+    confirmText: tx('إلغاء المنحة', 'Revoke grant')
+  });
+  if (reason === null) return;
+  if (!reason.trim()) {
+    toast(tx('سبب الإلغاء مطلوب.', 'A revocation reason is required.'), 'warning');
+    return;
+  }
+  try {
+    await rpc('admin_revoke_authorization_grant', { p_grant_id: id, p_reason: reason.trim() });
+    F.authorizationLoaded = false;
+    toast(tx('تم إلغاء المنحة وتسجيل القرار.', 'Grant revoked and audited.'), 'success');
+    reload();
+  } catch (error) {
+    toast(String(error?.message || error), 'error');
+  }
+}
+
 function userModal(id) {
+  if (!canAdministerProfiles()) {
+    toast(tx('إدارة ملفات المستخدمين متاحة للمسؤول الأعلى فقط.', 'Only SUPER_ADMIN may administer user profiles.'), 'error');
+    return;
+  }
+  if (!navigator.onLine || window.__session?.offline) {
+    toast(tx('إدارة ملفات المستخدمين تتطلب اتصالًا مباشرًا بالخادم.', 'Profile administration requires a live server connection.'), 'warning');
+    return;
+  }
   const u = store.byId('profiles', id);
   if (!u) return;
   const assigned = new Set(u.assigned_warehouse_ids || []);
@@ -1350,8 +1714,10 @@ function userModal(id) {
       <div class="o_field full"><label class="o_checkbox">
         <input type="checkbox" name="can_approve_without_workflow" ${u.can_approve_without_workflow ? 'checked' : ''}>
         ${tx('يمكنه الاعتماد دون سير عمل', 'Can approve without workflow')}</label></div>
-      ${textarea({ name: 'custom_permissions', label: tx('صلاحيات مخصصة (سطر لكل صلاحية)', 'Custom permissions (one per line)'),
-        value: (u.custom_permissions || []).join('\n'), rows: 5 })}
+      <div class="o_field full">${alertBox(tx(
+        'التفويضات الفردية لم تعد تُدار كقائمة صلاحيات عامة. استخدم تبويب «التفويض المتقدم» لمنح إجراء محدد على مورد ومستودع ونطاق بيانات معلوم، مع سبب المنح.',
+        'Individual permissions are no longer maintained as an unrestricted key list. Use Advanced Authorization to grant a specific action on a resource, warehouse and data scope with an auditable reason.'
+      ), 'info')}</div>
     </form>`;
   modal({
     title: `<i class="fa-solid fa-user-gear"></i> ${tx('تعديل مستخدم', 'Edit user')}`,
@@ -1361,6 +1727,10 @@ function userModal(id) {
     onMount: (el, close) => {
       el.querySelector('#uCancel').onclick = close;
       el.querySelector('#uSave').onclick = async () => {
+        if (!canAdministerProfiles() || !navigator.onLine || window.__session?.offline) {
+          toast(tx('الصلاحية أو الاتصال غير متاح. أعد المحاولة بعد التحقق.', 'Permission or connection unavailable. Reconnect and retry.'), 'warning');
+          return;
+        }
         const form = el.querySelector('#userForm');
         const d = Object.fromEntries(new FormData(form).entries());
         const warehouseIds = [...form.querySelectorAll('[name="wh"]:checked')].map(c => c.value);
@@ -1370,7 +1740,6 @@ function userModal(id) {
             status: d.status,
             assigned_warehouse_ids: warehouseIds,
             can_approve_without_workflow: !!form.querySelector('[name="can_approve_without_workflow"]')?.checked,
-            custom_permissions: String(d.custom_permissions || '').split(/\n+/).map(s => s.trim()).filter(Boolean)
           });
           close();
           toast(tx('تم تحديث المستخدم', 'User updated'), 'success');
@@ -1382,6 +1751,14 @@ function userModal(id) {
 }
 
 function linkUserModal() {
+  if (!canAdministerProfiles()) {
+    toast(tx('ربط المستخدمين متاح للمسؤول الأعلى فقط.', 'Only SUPER_ADMIN may link user profiles.'), 'error');
+    return;
+  }
+  if (!navigator.onLine || window.__session?.offline) {
+    toast(tx('ربط المستخدمين يتطلب اتصالًا مباشرًا بالخادم.', 'Linking profiles requires a live server connection.'), 'warning');
+    return;
+  }
   const body = `<form id="linkForm" class="o_form_grid">
       ${input({ name: 'email', label: tx('البريد الإلكتروني', 'Email'), type: 'email', required: true })}
       ${input({ name: 'name', label: tx('الاسم', 'Name'), required: true })}
@@ -1398,6 +1775,10 @@ function linkUserModal() {
     onMount: (el, close) => {
       el.querySelector('#luCancel').onclick = close;
       el.querySelector('#luSave').onclick = async () => {
+        if (!canAdministerProfiles() || !navigator.onLine || window.__session?.offline) {
+          toast(tx('الصلاحية أو الاتصال غير متاح. أعد المحاولة بعد التحقق.', 'Permission or connection unavailable. Reconnect and retry.'), 'warning');
+          return;
+        }
         const d = Object.fromEntries(new FormData(el.querySelector('#linkForm')).entries());
         try {
           await adminLinkProfile({ email: d.email, name: d.name, role: d.role, status: d.status, warehouseIds: [] });
@@ -1414,6 +1795,10 @@ function linkUserModal() {
 
 function unitModal(id) {
   const u = id ? store.byId('units', id) : null;
+  if (!canManageSystemSettings() || !navigator.onLine || window.__session?.offline) {
+    toast(tx('إدارة الوحدات تتطلب صلاحية مدير النظام واتصالًا مباشرًا.', 'Unit management requires system-manager access and a live connection.'), 'warning');
+    return;
+  }
   modal({
     title: tx('وحدة قياس', 'Unit of measure'), size: 'sm',
     body: `<form id="unitForm" class="o_form_grid">
@@ -1425,6 +1810,10 @@ function unitModal(id) {
     onMount: (el, close) => {
       el.querySelector('#unCancel').onclick = close;
       el.querySelector('#unSave').onclick = async () => {
+        if (!canManageSystemSettings() || !navigator.onLine || window.__session?.offline) {
+          toast(tx('الصلاحية أو الاتصال غير متاح. أعد المحاولة بعد التحقق.', 'Permission or connection unavailable. Reconnect and retry.'), 'warning');
+          return;
+        }
         const d = Object.fromEntries(new FormData(el.querySelector('#unitForm')).entries());
         d.code = String(d.code || '').trim().toUpperCase();
         d.name = String(d.name || '').trim();
@@ -1439,6 +1828,10 @@ function unitModal(id) {
 }
 
 async function removeUnit(id) {
+  if (!canManageSystemSettings() || !navigator.onLine || window.__session?.offline) {
+    toast(tx('حذف الوحدات يتطلب صلاحية مدير النظام واتصالًا مباشرًا.', 'Deleting units requires system-manager access and a live connection.'), 'warning');
+    return;
+  }
   if (!await confirmDialog({
     title: tx('حذف وحدة', 'Delete unit'),
     message: tx('قد تفشل العملية إذا كانت الوحدة مستخدمة.', 'This may fail if the unit is in use.'),
@@ -1450,6 +1843,10 @@ async function removeUnit(id) {
 
 function convModal(id) {
   const c = id ? store.byId('item_unit_conversions', id) : null;
+  if (!canManageSystemSettings() || !navigator.onLine || window.__session?.offline) {
+    toast(tx('إدارة معاملات الوحدات تتطلب صلاحية مدير النظام واتصالًا مباشرًا.', 'Unit-conversion management requires system-manager access and a live connection.'), 'warning');
+    return;
+  }
   const unitOptions = store.get('units')
     .map(u => String(u.code || '').trim().toUpperCase())
     .filter(Boolean)
@@ -1485,6 +1882,10 @@ function convModal(id) {
       itemSel.onchange = () => { hint.innerHTML = `<small class="o_hint">${esc(baseHint(itemSel.value))}</small>`; };
       el.querySelector('#cvCancel').onclick = close;
       el.querySelector('#cvSave').onclick = async () => {
+        if (!canManageSystemSettings() || !navigator.onLine || window.__session?.offline) {
+          toast(tx('الصلاحية أو الاتصال غير متاح. أعد المحاولة بعد التحقق.', 'Permission or connection unavailable. Reconnect and retry.'), 'warning');
+          return;
+        }
         const d = Object.fromEntries(new FormData(form).entries());
         const item = store.byId('items', d.item_id);
         const code = String(d.unit_code || '').trim().toUpperCase();
@@ -1519,6 +1920,10 @@ function convModal(id) {
 }
 
 async function removeConv(id) {
+  if (!canManageSystemSettings() || !navigator.onLine || window.__session?.offline) {
+    toast(tx('حذف تحويل الوحدة يتطلب صلاحية مدير النظام واتصالًا مباشرًا.', 'Deleting a unit conversion requires system-manager access and a live connection.'), 'warning');
+    return;
+  }
   if (!await confirmDialog({ title: tx('حذف تحويل', 'Delete conversion'),
     message: tx('هل تريد حذف هذا التحويل؟', 'Delete this conversion?'),
     confirmText: tx('حذف', 'Delete'), tone: 'danger' })) return;
@@ -1528,6 +1933,15 @@ async function removeConv(id) {
 
 function categoryModal(id) {
   const c = id ? store.byId('item_categories', id) : null;
+  const permission = c ? 'action:item:update' : 'action:item:create';
+  if (!can(permission)) {
+    toast(tx('ليست لديك صلاحية إدارة هذا التصنيف.', 'You do not have permission to manage this category.'), 'error');
+    return;
+  }
+  if (!navigator.onLine || window.__session?.offline) {
+    toast(tx('تعديل التصنيفات يتطلب اتصالًا مباشرًا بالخادم.', 'Category changes require a live server connection.'), 'warning');
+    return;
+  }
   modal({
     title: tx('تصنيف صنف', 'Item category'), size: 'sm',
     body: `<form id="catForm" class="o_form_grid">
@@ -1543,6 +1957,10 @@ function categoryModal(id) {
     onMount: (el, close) => {
       el.querySelector('#ctCancel').onclick = close;
       el.querySelector('#ctSave').onclick = async () => {
+        if (!can(permission) || !navigator.onLine || window.__session?.offline) {
+          toast(tx('تغيرت الصلاحيات أو انقطع الاتصال. أعد المحاولة بعد التحقق.', 'Permissions changed or the connection was lost. Reconnect and retry.'), 'warning');
+          return;
+        }
         const form = el.querySelector('#catForm');
         const d = Object.fromEntries(new FormData(form).entries());
         d.is_active = !!form.querySelector('[name="is_active"]').checked;
@@ -1556,6 +1974,14 @@ function categoryModal(id) {
 }
 
 async function removeCategory(id) {
+  if (!can('action:item:delete')) {
+    toast(tx('ليست لديك صلاحية حذف التصنيفات.', 'You do not have permission to delete categories.'), 'error');
+    return;
+  }
+  if (!navigator.onLine || window.__session?.offline) {
+    toast(tx('حذف التصنيفات يتطلب اتصالًا مباشرًا بالخادم.', 'Category deletion requires a live server connection.'), 'warning');
+    return;
+  }
   if (!await confirmDialog({ title: tx('حذف تصنيف', 'Delete category'),
     message: tx('قد تفشل العملية إذا كان التصنيف مستخدمًا.', 'This may fail if the category is in use.'),
     confirmText: tx('حذف', 'Delete'), tone: 'danger' })) return;
@@ -1760,12 +2186,13 @@ function forgetOfflineLogin() {
 /* ── globals ─────────────────────────────────────────────────────────────── */
 
 OW.wms = OW.wms || {};
-OW.wms.settingsTab = v => { F.tab = v; reload(); };
+OW.wms.settingsTab = v => { F.tab = v; if (v === 'authorization') { F.authorizationLoaded = false; F.authorizationError = ''; } reload(); };
 OW.wms.reloadSettings = async () => {
   try { await pullAll(); } catch (e) { toast(String(e.message || e), 'error'); }
   reload();
 };
 OW.wms.userModal = userModal;
+OW.wms.authorizationGrantModal = authorizationGrantModal;
 OW.wms.linkUser = linkUserModal;
 OW.wms.unitModal = unitModal;
 OW.wms.convModal = convModal;

@@ -2,12 +2,12 @@
 // OW — central store
 // ----------------------------------------------------------------------------
 // One in-memory snapshot (store.data), persisted to localStorage + optional
-// SQLite/OPFS, hydrated from Supabase, with offline queues:
-//   • master queue  → warehouses/items/units/... (non-financial master data)
-//   • tx outbox     → full transaction bundles (stock is NEVER posted offline)
-//   • offline auth  → PBKDF2 verifier cached by core-auth.js
+// SQLite/OPFS, hydrated from Supabase, with narrowly scoped offline work:
+//   • tx outbox             → ISSUE vouchers only
+//   • stocktake count queue → count entries only
+//   • offline auth          → PBKDF2 verifier cached by core-auth.js
 // ============================================================================
-import { from, rpc } from './core-supabase.js';
+import { from, rpc, sb } from './core-supabase.js';
 import { uuid, isUuid } from './core-utils.js';
 import { isAr } from './core-i18n.js';
 import { ensureOnlineSession } from './core-auth.js';
@@ -16,13 +16,17 @@ export { isUuid };
 
 const LS_KEY = 'orshap_wms_data_v5';
 const LS_LANG = 'orshap_lang';
-const MASTER_PREFIX = 'orshap_master_outbox_v1:';
+// Legacy key is read only to quarantine pending master-data edits from older releases.
+const LEGACY_MASTER_PREFIX = 'orshap_master_outbox_v1:';
+const MASTER_QUARANTINE_PREFIX = 'orshap_master_outbox_quarantine_v1:';
+const MASTER_REFRESH_REQUIRED_PREFIX = 'orshap_master_refresh_required_v1:';
+const LEGACY_MASTER_REFRESH_TABLES = new Set(['warehouses', 'zones', 'storage_areas', 'sections', 'shelves', 'items', 'item_categories', 'units', 'item_unit_conversions', 'system_settings']);
 const OUTBOX_PREFIX = 'orshap_tx_outbox_v1:';
+const STOCKTAKE_COUNT_QUEUE_PREFIX = 'orshap_stocktake_count_queue_v1:';
 
-// Supabase surfaces transport failures as several different messages depending
-// on browser/fetch implementation. Treat them all as "queue it and retry later",
-// never as a validation error the user has to manually recreate.
-const NETWORK_ERROR_RE = /failed to fetch|fetch failed|networkerror|network request failed|load failed|network connection|connection (?:lost|failed|reset)|econn(?:refused|reset|aborted)|enotfound|socket hang up|timed? ?out|offline/i;
+// Normalize transport failures for the supported transaction and stocktake
+// outboxes. Master-data mutations never enter an offline queue.
+const NETWORK_ERROR_RE = /failed to fetch|fetch failed|networkerror|network request failed|load failed|network connection|connection (?:lost|failed|reset)|econn(?:refused|reset|aborted)|enotfound|socket hang up|timed? ?out|(?:^|\b)(?:no internet connection|internet connection lost|device is offline|browser is offline)(?:\b|$)/i;
 const isNetworkFailure = error => NETWORK_ERROR_RE.test(String(error?.message ?? error ?? ''));
 const hasLiveSession = () => !!window.__session?.id && !window.__session.offline;
 const requireLiveConnection = (ar, en) => {
@@ -32,9 +36,10 @@ const signInOnlineMessage = () => isAr()
   ? 'سجّل الدخول عبر الإنترنت مرة واحدة لاستعادة جلسة الخادم ثم أعد المزامنة'
   : 'Sign in online once to restore the server session, then sync again';
 
-// OW posts stock only online. Offline entry is limited to receipts and issues
-// from the user's single explicitly assigned warehouse.
-const OFFLINE_TX_TYPES = new Set(['GRN', 'ISSUE']);
+// Only ISSUE vouchers may be entered offline. Stocktake counts use their own
+// queue; receipts/supplies, transfers, returns, adjustments and other vouchers
+// require a live connection. Offline scope remains one explicitly assigned warehouse.
+const OFFLINE_TX_TYPES = new Set(['ISSUE']);
 
 export const TABLES = [
   'warehouses', 'zones', 'storage_areas', 'warehouse_storage_areas',
@@ -45,18 +50,10 @@ export const TABLES = [
   'stock_transfers', 'stock_transfer_orders',
   'inventory_ledger', 'transaction_ledger', 'transaction_audit',
   'audit_logs', 'system_settings', 'profiles', 'permissions',
-  'role_permissions', 'archive_movements', 'archive_balances', 'sync_log'
+  'role_permissions', 'role_warehouse_scopes', 'archive_movements', 'archive_balances', 'sync_log'
 ];
 
-// Tables that can be edited offline and replayed later (no stock/financial impact).
-export const MASTER_TABLES = new Set([
-  'warehouses', 'zones', 'storage_areas',
-  'sections', 'shelves', 'items', 'item_categories', 'units',
-  'item_unit_conversions', 'system_settings'
-]);
-
-export const ELEVATED_ROLES = ['SUPER_ADMIN', 'ADMIN', 'MANAGER', 'WAREHOUSE_MANAGER'];
-export const AUTO_APPROVE_ROLES = ['SUPER_ADMIN', 'ADMIN', 'MANAGER', 'WAREHOUSE_MANAGER'];
+export const ELEVATED_ROLES = ['SUPER_ADMIN'];
 
 export const store = {
   data: Object.fromEntries(TABLES.map(t => [t, []])),
@@ -64,8 +61,14 @@ export const store = {
   offline: false,
   lastSync: null,
   noWarehouseAccess: false,
+  scopeConfigLoaded: false,
+  legacyMasterDataNeedsRefresh: false,
   loading: false,
   error: null,
+  authorizationPermissions: [],
+  authorizationPermissionsUserId: null,
+  authorizationGrantRows: [],
+  authorizationGrantRowsUserId: null,
   listeners: new Set(),
   get(table) { return this.data[table] || (this.data[table] = []); },
   byId(table, id) { return this.get(table).find(r => r.id === id) || null; },
@@ -85,23 +88,78 @@ const roleOf = () => String(window.__session?.role || '').toUpperCase();
 const isElevated = () => ELEVATED_ROLES.includes(roleOf());
 
 export function offlineTransactionTypeAllowed(type) {
-  return OFFLINE_TX_TYPES.has(String(type || '').toUpperCase());
+  return !store.legacyMasterDataNeedsRefresh
+    && OFFLINE_TX_TYPES.has(String(type || '').toUpperCase());
 }
 
 export function offlineWarehouseAllowed(warehouseId) {
   const session = window.__session;
-  if (!warehouseId || !session?.id) return false;
-  const profiles = [session.profile, byId('profiles', session.id)].filter(Boolean);
-  const profile = profiles.find(p => Array.isArray(p.assigned_warehouse_ids) && p.assigned_warehouse_ids.length)
-    || profiles.find(p => Array.isArray(p.assigned_warehouse_ids))
-    || session.profile
-    || {};
+  if (!warehouseId || !session?.id || store.legacyMasterDataNeedsRefresh) return false;
+  // Resolve scope only from the active user's own profile. Never borrow another
+  // cached profile's warehouse assignments just because it appears first.
+  if (store.scopeConfigLoaded !== true) return false;
+  const cachedProfile = store.get('profiles').find(p => p.id === session.id);
+  const profile = session.profile?.id === session.id
+    ? session.profile
+    : (cachedProfile || {});
   const assigned = [...new Set((profile.assigned_warehouse_ids || []).filter(Boolean))];
   if (assigned.length !== 1 || assigned[0] !== warehouseId) return false;
-  const accessible = Array.isArray(profile.accessible_warehouse_ids)
-    ? profile.accessible_warehouse_ids
-    : null;
-  return !accessible || accessible.includes(warehouseId);
+  const roleScope = store.get('role_warehouse_scopes').find(row =>
+    String(row.role_name || '').toUpperCase() === String(session.role || '').toUpperCase()
+  ) || profile.role_warehouse_scope || null;
+  const mode = String(roleScope?.scope_mode || 'INHERIT').toUpperCase();
+  const roleIds = Array.isArray(roleScope?.warehouse_ids) ? roleScope.warehouse_ids : [];
+  if (mode === 'SELECTED' && !roleIds.includes(warehouseId)) return false;
+  // With an explicit user assignment, every non-SELECTED role mode preserves
+  // that assignment as the effective scope (including MANAGER/INHERIT).
+  return true;
+}
+
+function objectContainsContext(actual, expected) {
+  if (!expected || typeof expected !== 'object' || Array.isArray(expected)) return true;
+  if (!actual || typeof actual !== 'object' || Array.isArray(actual)) return false;
+  return Object.entries(expected).every(([key, value]) => {
+    const current = actual[key];
+    if (value && typeof value === 'object' && !Array.isArray(value)) return objectContainsContext(current, value);
+    if (Array.isArray(value)) return Array.isArray(current) && value.every(v => current.includes(v));
+    return current === value;
+  });
+}
+
+export function hasAnyEffectiveCachedGrant(permissionKey) {
+  const user = window.__session;
+  if (!user?.id || !permissionKey) return false;
+  if (String(user.role || user.profile?.role || '').toUpperCase() === 'SUPER_ADMIN') return true;
+  if (store.authorizationGrantRowsUserId !== user.id) return false;
+  return store.authorizationGrantRows.some(grant =>
+    grant.permission_key === permissionKey
+    && String(grant.effect).toUpperCase() === 'ALLOW'
+    && (!grant.valid_from || new Date(grant.valid_from).getTime() <= Date.now())
+    && (!grant.valid_until || new Date(grant.valid_until).getTime() > Date.now())
+  );
+}
+
+export function hasEffectiveCachedGrant(permissionKey, context = {}) {
+  const user = window.__session;
+  if (!user?.id || !permissionKey) return false;
+  if (String(user.role || user.profile?.role || '').toUpperCase() === 'SUPER_ADMIN') return true;
+  if (store.authorizationGrantRowsUserId !== user.id) return false;
+  const matches = store.authorizationGrantRows.filter(grant => {
+    if (grant.permission_key !== permissionKey) return false;
+    if (grant.resource_type && grant.resource_type !== context.resource_type) return false;
+    if (grant.resource_id && grant.resource_id !== context.resource_id) return false;
+    if (grant.warehouse_id && grant.warehouse_id !== context.warehouse_id) return false;
+    if (grant.valid_from && new Date(grant.valid_from).getTime() > Date.now()) return false;
+    if (grant.valid_until && new Date(grant.valid_until).getTime() <= Date.now()) return false;
+    if (!objectContainsContext(context, grant.conditions || {})) return false;
+    const scope = String(grant.scope_type || 'ALL').toUpperCase();
+    if (scope === 'OWN') return context.owner_id === user.id;
+    if (scope === 'WAREHOUSE') return !!grant.warehouse_id && context.warehouse_id === grant.warehouse_id;
+    if (scope === 'CONTEXT') return objectContainsContext(context, grant.conditions || {});
+    return scope === 'ALL';
+  });
+  if (matches.some(grant => String(grant.effect).toUpperCase() === 'DENY')) return false;
+  return matches.some(grant => String(grant.effect).toUpperCase() === 'ALLOW');
 }
 
 /* ── local persistence ──────────────────────────────────────────────────── */
@@ -110,7 +168,7 @@ let persistTimer = null;
 export function persist(immediate = false) {
   const write = () => {
     try {
-      const payload = { ...store.data, __cached_user_id: currentUserId(), __saved_at: new Date().toISOString() };
+      const payload = { ...store.data, __cached_user_id: currentUserId(), __scope_config_loaded: store.scopeConfigLoaded === true, __authorization_permissions: store.authorizationPermissions, __authorization_permissions_user_id: store.authorizationPermissionsUserId, __authorization_grants: store.authorizationGrantRows, __authorization_grants_user_id: store.authorizationGrantRowsUserId, __saved_at: new Date().toISOString() };
       localStorage.setItem(LS_KEY, JSON.stringify(payload));
       if (window.orshapSQLite?.saveState) {
         window.orshapSQLite.saveState(store.data).catch(() => {});
@@ -126,17 +184,106 @@ export function persist(immediate = false) {
 
 export function loadLocal() {
   try {
+    quarantineLegacyMasterQueue();
     const raw = localStorage.getItem(LS_KEY);
-    if (!raw) return false;
+    if (!raw) {
+      for (const t of TABLES) store.data[t] = [];
+      store.authorizationPermissions = [];
+      store.authorizationPermissionsUserId = null;
+      store.authorizationGrantRows = [];
+      store.authorizationGrantRowsUserId = null;
+      store.scopeConfigLoaded = false;
+      store.noWarehouseAccess = !!window.__session?.id
+        && !ELEVATED_ROLES.includes(String(window.__session?.role || '').toUpperCase())
+        && !(Array.isArray(window.__session?.profile?.assigned_warehouse_ids)
+          && window.__session.profile.assigned_warehouse_ids.length);
+      store.loaded = false;
+      enrichAll();
+      return false;
+    }
     const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object') return false;
+    if (!parsed || typeof parsed !== 'object') {
+      for (const t of TABLES) store.data[t] = [];
+      store.authorizationPermissions = [];
+      store.authorizationPermissionsUserId = null;
+      store.authorizationGrantRows = [];
+      store.authorizationGrantRowsUserId = null;
+      store.scopeConfigLoaded = false;
+      store.noWarehouseAccess = !!window.__session?.id
+        && !ELEVATED_ROLES.includes(String(window.__session?.role || '').toUpperCase())
+        && !(Array.isArray(window.__session?.profile?.assigned_warehouse_ids)
+          && window.__session.profile.assigned_warehouse_ids.length);
+      store.loaded = false;
+      enrichAll();
+      return false;
+    }
+
+    // Never hydrate a cached snapshot unless it is bound to the currently
+    // authenticated/offline-verified user. Queues are already user-keyed, but
+    // the shared snapshot is not; accepting a missing owner or a different
+    // owner can expose another account's warehouse and audit data on shared
+    // devices. Keep the disk snapshot intact so its owner can sign back in.
+    const activeUserId = window.__session?.id || null;
+    if (!activeUserId || !parsed.__cached_user_id || parsed.__cached_user_id !== activeUserId) {
+      for (const t of TABLES) store.data[t] = [];
+      store.authorizationPermissions = [];
+      store.authorizationPermissionsUserId = null;
+      store.authorizationGrantRows = [];
+      store.authorizationGrantRowsUserId = null;
+      store.noWarehouseAccess = !!activeUserId
+        && !ELEVATED_ROLES.includes(String(window.__session?.role || '').toUpperCase())
+        && !(Array.isArray(window.__session?.profile?.assigned_warehouse_ids)
+          && window.__session.profile.assigned_warehouse_ids.length);
+      store.scopeConfigLoaded = false;
+      store.loaded = false;
+      enrichAll();
+      return false;
+    }
+
     for (const t of TABLES) {
       if (Array.isArray(parsed[t])) store.data[t] = parsed[t];
     }
+    store.scopeConfigLoaded = parsed.__scope_config_loaded === true;
+    if (Array.isArray(parsed.__authorization_grants)
+        && parsed.__authorization_grants_user_id === currentUserId()) {
+      store.authorizationGrantRows = parsed.__authorization_grants.filter(row =>
+        row && typeof row.permission_key === 'string'
+        && ['ALLOW','DENY'].includes(String(row.effect || '').toUpperCase())
+      );
+      store.authorizationGrantRowsUserId = currentUserId();
+      store.authorizationPermissions = [...new Set(store.authorizationGrantRows
+        .filter(row => row.effect === 'ALLOW').map(row => row.permission_key))];
+      store.authorizationPermissionsUserId = currentUserId();
+    } else {
+      // Older snapshots contain only permission keys, not their warehouse,
+      // resource, conditions, deny precedence or validity. Fail closed.
+      store.authorizationGrantRows = [];
+      store.authorizationGrantRowsUserId = null;
+      store.authorizationPermissions = [];
+      store.authorizationPermissionsUserId = null;
+    }
     enrichAll();
+    // The per-user stocktake outbox is the durable source for unsynchronized
+    // counts. Reapply it immediately after a verified snapshot is hydrated so
+    // a refresh cannot temporarily (or permanently) show the pre-count value.
+    // The overlay itself verifies user, session and warehouse identity.
+    applyStocktakeCountOverlay();
     store.loaded = true;
+    if (!Array.isArray(parsed.__authorization_grants)) persist(true);
     return true;
   } catch (e) {
+    for (const t of TABLES) store.data[t] = [];
+    store.authorizationPermissions = [];
+    store.authorizationPermissionsUserId = null;
+    store.authorizationGrantRows = [];
+    store.authorizationGrantRowsUserId = null;
+    store.scopeConfigLoaded = false;
+    store.loaded = false;
+    store.noWarehouseAccess = !!window.__session?.id
+      && !ELEVATED_ROLES.includes(String(window.__session?.role || '').toUpperCase())
+      && !(Array.isArray(window.__session?.profile?.assigned_warehouse_ids)
+        && window.__session.profile.assigned_warehouse_ids.length);
+    enrichAll();
     console.warn('[store] local load failed', e);
     return false;
   }
@@ -228,10 +375,11 @@ export function enrichAll() {
 
 /* ── remote pull ────────────────────────────────────────────────────────── */
 
-const REQUIRED = new Set(['warehouses', 'items', 'stock', 'transactions', 'transaction_lines', 'shelves']);
+const REQUIRED = new Set(['warehouses', 'items', 'stock', 'transactions', 'transaction_lines', 'shelves', 'role_warehouse_scopes']);
 
 export async function pullAll({ silent = false } = {}) {
   if (store.loading) return store.data;
+  quarantineLegacyMasterQueue();
   // Offline sessions (and real offline) must never hit the network: with only the
   // anon key the RLS-protected tables return empty arrays, which would wipe the
   // local cache. Read the cached snapshot instead.
@@ -239,10 +387,10 @@ export async function pullAll({ silent = false } = {}) {
   if (!navigator.onLine || offlineSession) {
     store.offline = true;
     loadLocal();
-    // The persisted cache already contains the overlay, but reapplying it keeps
-    // the local queue visible even when another tab cleared the snapshot.
-    applyMasterOverlay();
+    // Reapply only the two supported offline work queues over the cached snapshot.
     applyOutboxOverlay();
+    applyStocktakeCountOverlay();
+    applyAccessFilter();
     store.loaded = true;
     return store.data;
   }
@@ -275,15 +423,45 @@ export async function pullAll({ silent = false } = {}) {
       } catch (e) {
         if (REQUIRED.has(t)) throw new Error(`${t}: ${e.message || e}`);
         console.warn(`[store] optional table ${t} unavailable:`, e.message || e);
-        return [t, []];
+        // Preserve the previous in-memory value on a transient read/permission
+        // failure. An unavailable table is not evidence that it is empty.
+        return [t, null];
       }
     }));
-    for (const [t, list] of results) store.data[t] = list;
+    for (const [t, list] of results) {
+      if (list !== null) store.data[t] = list;
+    }
+    // Hydrate the active grants with their exact resource, warehouse,
+    // conditions, expiry and DENY precedence for contextual UI hints.
+    try {
+      const grantRows = await rpc('current_user_authorization_grants');
+      store.authorizationGrantRows = Array.isArray(grantRows) ? grantRows : [];
+      store.authorizationGrantRowsUserId = currentUserId();
+      store.authorizationPermissions = [...new Set(store.authorizationGrantRows
+        .filter(row => row?.effect === 'ALLOW' && typeof row.permission_key === 'string')
+        .map(row => row.permission_key))];
+      store.authorizationPermissionsUserId = currentUserId();
+    } catch (permissionError) {
+      if (store.authorizationGrantRowsUserId !== currentUserId()) {
+        store.authorizationGrantRows = [];
+        store.authorizationGrantRowsUserId = null;
+        store.authorizationPermissions = [];
+        store.authorizationPermissionsUserId = null;
+      }
+      console.warn('[store] scoped authorization grants unavailable; preserving only this user\'s verified cached grants:', permissionError?.message || permissionError);
+    }
+    store.scopeConfigLoaded = results.some(([t, list]) => t === 'role_warehouse_scopes' && list !== null);
+    if (store.legacyMasterDataNeedsRefresh
+        && results.every(([t, list]) => !LEGACY_MASTER_REFRESH_TABLES.has(t) || list !== null)) {
+      localStorage.removeItem(MASTER_REFRESH_REQUIRED_PREFIX + currentUserId());
+      store.legacyMasterDataNeedsRefresh = false;
+    }
 
-    // Keep the previous cache for tables that failed entirely (offline resilience).
+    // Optional tables that failed to read retain their prior cache; only a
+    // successful query returning zero rows is allowed to replace data with [].
     enrichAll();
-    applyMasterOverlay();
     applyOutboxOverlay();
+    applyStocktakeCountOverlay();
     applyAccessFilter();
     store.offline = false;
     store.loaded = true;
@@ -295,6 +473,11 @@ export async function pullAll({ silent = false } = {}) {
     store.error = e;
     console.error('[store] pull failed', e);
     if (!store.loaded) loadLocal();
+    // A failed remote pull must not hide durable local work, even when the
+    // store was already marked loaded before the request failed.
+    applyOutboxOverlay();
+    applyStocktakeCountOverlay();
+    applyAccessFilter();
     store.offline = !navigator.onLine;
     store.loaded = true;
     throw e;
@@ -303,157 +486,165 @@ export async function pullAll({ silent = false } = {}) {
   }
 }
 
-function applyAccessFilter() {
+export function applyAccessFilter() {
   const user = window.__session;
-  const elevated = isElevated();
-  const assigned = Array.isArray(user?.profile?.assigned_warehouse_ids)
-    ? user.profile.assigned_warehouse_ids : [];
-  store.noWarehouseAccess = !elevated && assigned.length === 0;
-  if (elevated || !assigned.length) return;
+  if (!user?.id) return;
+  const roleName = String(user.role || user.profile?.role || '').toUpperCase();
 
-  const allow = new Set(assigned);
+  // SUPER_ADMIN is the sole global break-glass identity. Offline work still
+  // has its separate exactly-one-explicit-warehouse restriction.
+  if (roleName === 'SUPER_ADMIN') {
+    store.noWarehouseAccess = false;
+    return;
+  }
+
+  if (store.scopeConfigLoaded !== true) {
+    store.noWarehouseAccess = true;
+    for (const t of [
+      'warehouses', 'zones', 'storage_areas', 'warehouse_storage_areas',
+      'sections', 'shelves', 'stock', 'transactions', 'transaction_lines',
+      'stocktake_sessions', 'stocktake_lines', 'stocktake_logs',
+      'stock_transfers', 'stock_transfer_orders', 'inventory_ledger',
+      'transaction_ledger', 'transaction_audit', 'audit_logs',
+      'archive_movements', 'archive_balances', 'sync_log'
+    ]) store.data[t] = [];
+    enrichAll();
+    return;
+  }
+
+  const assigned = Array.isArray(user.profile?.assigned_warehouse_ids)
+    ? [...new Set(user.profile.assigned_warehouse_ids.filter(Boolean))] : [];
+  const roleScope = store.get('role_warehouse_scopes').find(row =>
+    String(row.role_name || '').toUpperCase() === roleName
+  ) || user.profile?.role_warehouse_scope || null;
+  const mode = String(roleScope?.scope_mode || 'INHERIT').toUpperCase();
+  const roleIds = Array.isArray(roleScope?.warehouse_ids) ? roleScope.warehouse_ids : [];
+
+  // Match current_user_can_access_warehouse(): user assignment is a restriction,
+  // and SELECTED role scope intersects with that assignment.
+  let allowedIds = null;
+  if (assigned.length) {
+    allowedIds = new Set(assigned);
+    if (mode === 'SELECTED') {
+      const selected = new Set(roleIds);
+      allowedIds = new Set([...allowedIds].filter(id => selected.has(id)));
+    }
+  } else if (mode === 'SELECTED') {
+    allowedIds = new Set(roleIds);
+  } else if (mode === 'ALL') {
+    allowedIds = null;
+  } else {
+    allowedIds = new Set();
+  }
+
+  store.noWarehouseAccess = allowedIds !== null && allowedIds.size === 0;
+  if (allowedIds === null) return;
+
+  const allow = allowedIds;
   store.data.warehouses = store.get('warehouses').filter(w => allow.has(w.id));
   store.data.zones = store.get('zones').filter(z => allow.has(z.warehouse_id));
   store.data.storage_areas = store.get('storage_areas').filter(a => allow.has(a.warehouse_id));
-  store.data.sections = store.get('sections').filter(s => allow.has(s.warehouse_id));
-  store.data.shelves = store.get('shelves').filter(s => allow.has(s.warehouse_id));
-  const shelfIds = new Set(store.data.shelves.map(s => s.id));
-  store.data.stock = store.get('stock').filter(s => shelfIds.has(s.shelf_id));
-  const itemIds = new Set(store.data.stock.map(s => s.item_id));
-  store.data.items = store.get('items').filter(i => itemIds.has(i.id) || allow.has(i.default_warehouse_id));
-  const txIds = new Set(store.get('transactions').filter(t => allow.has(t.warehouse_id)).map(t => t.id));
-  store.data.transactions = store.get('transactions').filter(t => txIds.has(t.id));
-  store.data.transaction_lines = store.get('transaction_lines').filter(l => txIds.has(l.transaction_id));
-  const sessionIds = new Set(store.get('stocktake_sessions').filter(s => allow.has(s.warehouse_id)).map(s => s.id));
-  store.data.stocktake_sessions = store.get('stocktake_sessions').filter(s => sessionIds.has(s.id));
-  store.data.stocktake_lines = store.get('stocktake_lines').filter(l => sessionIds.has(l.session_id));
-  store.data.stocktake_logs = store.get('stocktake_logs').filter(l => sessionIds.has(l.session_id));
-  store.data.stock_transfers = store.get('stock_transfers').filter(t => allow.has(t.source_warehouse_id) || allow.has(t.destination_warehouse_id));
-  store.data.stock_transfer_orders = store.get('stock_transfer_orders').filter(o => allow.has(o.source_warehouse_id) || allow.has(o.destination_warehouse_id));
-  for (const t of ['inventory_ledger', 'transaction_ledger', 'transaction_audit', 'archive_movements', 'archive_balances']) {
-    store.data[t] = store.get(t).filter(r => !r.warehouse_id || allow.has(r.warehouse_id));
+  store.data.warehouse_storage_areas = store.get('warehouse_storage_areas').filter(a => allow.has(a.warehouse_id));
+  store.data.sections = store.get('sections').filter(x => allow.has(x.warehouse_id));
+  store.data.shelves = store.get('shelves').filter(x => allow.has(x.warehouse_id));
+  const shelfIds = new Set(store.data.shelves.map(x => x.id));
+  store.data.stock = store.get('stock').filter(x => shelfIds.has(x.shelf_id));
+  const txIds = new Set(store.get('transactions').filter(x => allow.has(x.warehouse_id)).map(x => x.id));
+  store.data.transactions = store.get('transactions').filter(x => txIds.has(x.id));
+  store.data.transaction_lines = store.get('transaction_lines').filter(x => txIds.has(x.transaction_id));
+  const sessionIds = new Set(store.get('stocktake_sessions').filter(x => allow.has(x.warehouse_id)).map(x => x.id));
+  store.data.stocktake_sessions = store.get('stocktake_sessions').filter(x => sessionIds.has(x.id));
+  store.data.stocktake_lines = store.get('stocktake_lines').filter(x => sessionIds.has(x.session_id));
+  store.data.stocktake_logs = store.get('stocktake_logs').filter(x => sessionIds.has(x.session_id));
+  store.data.stock_transfers = store.get('stock_transfers').filter(x => allow.has(x.source_warehouse_id) || allow.has(x.destination_warehouse_id));
+  store.data.stock_transfer_orders = store.get('stock_transfer_orders').filter(x => allow.has(x.source_warehouse_id) || allow.has(x.destination_warehouse_id));
+  for (const t of ['inventory_ledger', 'transaction_ledger', 'transaction_audit', 'archive_movements', 'archive_balances', 'audit_logs', 'sync_log']) {
+    store.data[t] = store.get(t).filter(x => !!x.warehouse_id && allow.has(x.warehouse_id));
   }
   enrichAll();
 }
 
-/* ── offline master queue ───────────────────────────────────────────────── */
+/* ── legacy master-queue quarantine (never replay) ─────────────────────── */
 
-export function masterQueue() {
+function readLegacyMasterQuarantine() {
   try {
-    const a = JSON.parse(localStorage.getItem(MASTER_PREFIX + currentUserId()) || '[]');
-    return Array.isArray(a) ? a : [];
+    const value = JSON.parse(localStorage.getItem(MASTER_QUARANTINE_PREFIX + currentUserId()) || '[]');
+    return Array.isArray(value) ? value : [];
   } catch (_) { return []; }
 }
-function masterQueueWrite(a) {
-  localStorage.setItem(MASTER_PREFIX + currentUserId(), JSON.stringify(a));
-  window.dispatchEvent(new CustomEvent('orshap-master-queue-changed', { detail: { count: a.filter(x => x.status !== 'SYNCED').length } }));
-}
 
-function queueMaster(kind, table, id, row) {
-  if (!MASTER_TABLES.has(table)) throw new Error(
-    isAr() ? 'هذه العملية تتطلب اتصالاً بالإنترنت' : 'This operation requires an internet connection');
-  if (!window.__session?.id) throw new Error(isAr() ? 'سجّل الدخول أولًا' : 'Sign in first');
-  const pk = table === 'system_settings' ? 'key' : 'id';
-  const savedId = id || row?.[pk] || uid();
-  const payload = { ...(row || {}), [pk]: savedId };
-  const list = store.get(table);
-  const i = list.findIndex(x => x[pk] === savedId);
-  if (kind === 'insert') {
-    if (!payload.created_at && pk === 'id') payload.created_at = new Date().toISOString();
-    if (i < 0) list.push(payload); else list[i] = payload;
-  } else if (kind === 'update') {
-    const next = { ...(i >= 0 ? list[i] : {}), ...payload, updated_at: new Date().toISOString() };
-    if (i >= 0) list[i] = next; else list.push(next);
-  } else if (kind === 'delete') {
-    if (i >= 0) list.splice(i, 1);
+function quarantineLegacyMasterQueue() {
+  const userId = window.__session?.id;
+  if (!userId) return [];
+  const legacyKey = LEGACY_MASTER_PREFIX + userId;
+  const refreshKey = MASTER_REFRESH_REQUIRED_PREFIX + userId;
+  let raw;
+  try { raw = localStorage.getItem(legacyKey); } catch (_) {
+    store.legacyMasterDataNeedsRefresh = true;
+    return readLegacyMasterQuarantine();
   }
-  const q = masterQueue();
-  q.push({ operation_id: uid(), kind, table, id: savedId, pk, row: payload, created_at: new Date().toISOString(), status: 'PENDING', attempts: 0 });
-  masterQueueWrite(q);
-  enrichAll();
-  persist(true);
-  store.emit();
-  return payload;
-}
+  if (!raw) {
+    try { store.legacyMasterDataNeedsRefresh = localStorage.getItem(refreshKey) === '1'; }
+    catch (_) { store.legacyMasterDataNeedsRefresh = true; }
+    return readLegacyMasterQuarantine();
+  }
 
-function applyMasterOverlay() {
-  const q = masterQueue();
-  if (!q.length) return;
-  for (const op of q) {
-    if (!MASTER_TABLES.has(op.table)) continue;
-    const pk = op.pk || (op.table === 'system_settings' ? 'key' : 'id');
-    const list = store.get(op.table);
-    const i = list.findIndex(x => x[pk] === op.id);
-    if (op.kind === 'delete') { if (i >= 0) list.splice(i, 1); }
-    else if (op.kind === 'insert') { if (i < 0) list.push({ ...op.row }); else list[i] = { ...list[i], ...op.row }; }
-    else if (op.kind === 'update') { if (i >= 0) list[i] = { ...list[i], ...op.row }; else list.push({ ...op.row }); }
+  let legacy;
+  try { legacy = JSON.parse(raw); } catch (_) { legacy = null; }
+  const entries = Array.isArray(legacy) ? legacy : [{
+    operation_id: 'legacy-malformed-master-queue', table: 'legacy master queue',
+    kind: 'unreadable', raw_payload: raw
+  }];
+  const quarantined = readLegacyMasterQuarantine();
+  const pendingEntries = entries.filter(entry => entry?.status !== 'SYNCED');
+  if (pendingEntries.length) store.legacyMasterDataNeedsRefresh = true;
+  let refreshBarrierPersisted = pendingEntries.length === 0;
+  try {
+    if (pendingEntries.length) localStorage.setItem(refreshKey, '1');
+    const refreshMarkerStored = localStorage.getItem(refreshKey) === '1';
+    if (pendingEntries.length && !refreshMarkerStored) {
+      throw new Error('Unable to persist legacy master refresh barrier');
+    }
+    refreshBarrierPersisted = pendingEntries.length === 0 || refreshMarkerStored;
+    store.legacyMasterDataNeedsRefresh = pendingEntries.length > 0 || refreshMarkerStored;
+  } catch (e) {
+    refreshBarrierPersisted = false;
+    store.legacyMasterDataNeedsRefresh = true;
+    console.warn('[store] legacy master refresh barrier failed:', e);
   }
-  enrichAll();
-}
-
-export async function flushMasterQueue() {
-  if (!navigator.onLine || !window.__session?.id) return 0;
-  if (!(await ensureOnlineSession())) return 0;
-  const q = masterQueue();
-  if (!q.length) return 0;
-  let changed = false, done = 0;
-  for (let i = 0; i < q.length;) {
-    const op = q[i];
-    if (!op || typeof op !== 'object' || Array.isArray(op)) {
-      q.splice(i, 1);
-      changed = true;
-      continue;
-    }
-    if (op.status === 'CONFLICT' || op.status === 'ERROR') { i++; continue; }
-    const pk = op.table === 'system_settings' ? 'key' : 'id';
-    const valid = MASTER_TABLES.has(op.table)
-      && ['insert', 'update', 'delete'].includes(op.kind)
-      && op.pk === pk
-      && !!op.id
-      && (op.kind === 'delete' || (op.row && typeof op.row === 'object'
-        && !Array.isArray(op.row) && op.row[pk] === op.id));
-    if (!valid) {
-      op.status = 'ERROR';
-      op.last_error = 'Invalid or unsupported offline master-data operation; retained for review and not sent to the server.';
-      changed = true;
-      i++;
-      continue;
-    }
-    try {
-      let result;
-      if (op.kind === 'insert') {
-        const row = { ...op.row };
-        delete row.variance;
-        result = await (await from(op.table)).upsert(row, { onConflict: pk });
-      } else if (op.kind === 'update') {
-        const patch = { ...op.row };
-        delete patch.variance;
-        delete patch[pk];
-        result = await (await from(op.table)).update(patch).eq(pk, op.id);
-      } else {
-        result = await (await from(op.table)).delete().eq(pk, op.id);
-      }
-      if (result?.error) throw result.error;
-      q.splice(i, 1);
-      changed = true;
-      done++;
-    } catch (e) {
-      op.attempts = (op.attempts || 0) + 1;
-      op.last_error = String(e?.message || e);
-      op.status = isNetworkFailure(e) ? 'PENDING' : 'ERROR';
-      changed = true;
-      if (op.status === 'PENDING') break;
-      i++;
-    }
+  const seen = new Set(quarantined.map(row => row?.operation_id).filter(Boolean));
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    if (entry?.status === 'SYNCED') continue;
+    const row = entry && typeof entry === 'object' && !Array.isArray(entry) ? entry : {
+      operation_id: `legacy-master-${i}`, raw_payload: String(entry)
+    };
+    const operationId = row.operation_id || `legacy-master-${i}-${row.table || 'unknown'}-${row.id || ''}`;
+    if (seen.has(operationId)) continue;
+    quarantined.push({
+      ...row, operation_id: operationId, status: 'CONFLICT',
+      last_error: 'BLOCKED_BY_OFFLINE_POLICY: Master-data changes require a live connection. Review this legacy entry and re-enter the change online; it will not be synchronized.',
+      policy_blocked_at: new Date().toISOString()
+    });
+    seen.add(operationId);
   }
-  if (changed) masterQueueWrite(q);
-  if (!q.length) await pullAll({ silent: true }).catch(() => {});
-  return done;
+  try {
+    if (pendingEntries.length && !refreshBarrierPersisted) {
+      throw new Error('Legacy master refresh barrier could not be persisted; legacy queue retained.');
+    }
+    localStorage.setItem(MASTER_QUARANTINE_PREFIX + userId, JSON.stringify(quarantined));
+    localStorage.removeItem(legacyKey);
+  } catch (e) {
+    store.legacyMasterDataNeedsRefresh = true;
+    console.warn('[store] legacy master queue quarantine failed:', e);
+  }
+  return quarantined;
 }
 
 export async function retryQueueErrors() {
   let n = 0;
-  for (const key of [MASTER_PREFIX + currentUserId(), OUTBOX_PREFIX + currentUserId()]) {
+  for (const prefix of [OUTBOX_PREFIX, STOCKTAKE_COUNT_QUEUE_PREFIX]) {
+    const key = prefix + currentUserId();
     try {
       const q = JSON.parse(localStorage.getItem(key) || '[]');
       if (!Array.isArray(q)) continue;
@@ -464,74 +655,54 @@ export async function retryQueueErrors() {
   return n;
 }
 
-/* ── generic row mutations ──────────────────────────────────────────────── */
+/* ── generic row mutations: live connection required ────────────────────── */
 
 export async function insertRow(table, row) {
-  if (!navigator.onLine && MASTER_TABLES.has(table)) return queueMaster('insert', table, null, row);
-  try {
-    const { data, error } = await (await from(table)).insert(row).select().single();
-    if (error) throw error;
-    await pullAll({ silent: true }).catch(() => {});
-    return data;
-  } catch (e) {
-    if (MASTER_TABLES.has(table) && isNetworkFailure(e)) {
-      return queueMaster('insert', table, null, row);
-    }
-    throw e;
-  }
+  requireLiveConnection(
+    'هذه العملية تتطلب اتصالًا مباشرًا بالخادم. لا يُسمح باستيراد أو تعديل البيانات الرئيسية دون اتصال.',
+    'This operation requires a live server connection. Master-data changes cannot be queued offline.'
+  );
+  const { data, error } = await (await from(table)).insert(row).select().single();
+  if (error) throw error;
+  await pullAll({ silent: true }).catch(() => {});
+  return data;
 }
 
 export async function updateRow(table, id, patch) {
-  if (!navigator.onLine && MASTER_TABLES.has(table)) return queueMaster('update', table, id, patch);
-  try {
-    const { data, error } = await (await from(table)).update(patch).eq('id', id).select().single();
-    if (error) throw error;
-    await pullAll({ silent: true }).catch(() => {});
-    return data;
-  } catch (e) {
-    if (MASTER_TABLES.has(table) && isNetworkFailure(e)) {
-      return queueMaster('update', table, id, patch);
-    }
-    throw e;
-  }
+  requireLiveConnection(
+    'هذه العملية تتطلب اتصالًا مباشرًا بالخادم. لا يُسمح باستيراد أو تعديل البيانات الرئيسية دون اتصال.',
+    'This operation requires a live server connection. Master-data changes cannot be queued offline.'
+  );
+  const { data, error } = await (await from(table)).update(patch).eq('id', id).select().single();
+  if (error) throw error;
+  await pullAll({ silent: true }).catch(() => {});
+  return data;
 }
 
 export async function deleteRow(table, id) {
-  if (!navigator.onLine && MASTER_TABLES.has(table)) return queueMaster('delete', table, id, {});
-  try {
-    const { error } = await (await from(table)).delete().eq('id', id);
-    if (error) throw error;
-    await pullAll({ silent: true }).catch(() => {});
-    return true;
-  } catch (e) {
-    if (MASTER_TABLES.has(table) && isNetworkFailure(e)) {
-      return queueMaster('delete', table, id, {});
-    }
-    throw e;
-  }
+  requireLiveConnection(
+    'هذه العملية تتطلب اتصالًا مباشرًا بالخادم. لا يُسمح باستيراد أو تعديل البيانات الرئيسية دون اتصال.',
+    'This operation requires a live server connection. Master-data changes cannot be queued offline.'
+  );
+  const { error } = await (await from(table)).delete().eq('id', id);
+  if (error) throw error;
+  await pullAll({ silent: true }).catch(() => {});
+  return true;
 }
 
 export async function upsertSetting(key, value, description = '') {
+  requireLiveConnection(
+    'تعديل إعدادات النظام يتطلب اتصالًا مباشرًا بالخادم.',
+    'System settings require a live server connection.'
+  );
   const row = { key, value: String(value), description, updated_at: new Date().toISOString() };
-  if (!navigator.onLine) {
-    queueMaster('update', 'system_settings', key, row);
-    return row;
-  }
-  try {
-    const { error } = await (await from('system_settings')).upsert(row, { onConflict: 'key' });
-    if (error) throw error;
-    const list = store.get('system_settings');
-    const i = list.findIndex(x => x.key === key);
-    if (i >= 0) list[i] = { ...list[i], ...row }; else list.push(row);
-    persist(true);
-    return row;
-  } catch (e) {
-    if (isNetworkFailure(e)) {
-      queueMaster('update', 'system_settings', key, row);
-      return row;
-    }
-    throw e;
-  }
+  const { error } = await (await from('system_settings')).upsert(row, { onConflict: 'key' });
+  if (error) throw error;
+  const list = store.get('system_settings');
+  const i = list.findIndex(x => x.key === key);
+  if (i >= 0) list[i] = { ...list[i], ...row }; else list.push(row);
+  persist(true);
+  return row;
 }
 
 export function setting(key, fallback = null) {
@@ -641,6 +812,34 @@ function applyOutboxOverlay() {
   enrichAll();
 }
 
+function applyStocktakeCountOverlay() {
+  const userId = currentUserId();
+  if (!userId) return;
+  const sessions = new Map(store.get('stocktake_sessions').map(s => [s.id, s]));
+  const lines = new Map(store.get('stocktake_lines').map(l => [l.id, l]));
+  let changed = false;
+  for (const row of stocktakeCountQueue()) {
+    if (row.user_id !== userId || row.status === 'SYNCED') continue;
+    const line = lines.get(row.line_id);
+    const session = line && sessions.get(line.session_id);
+    // Only overlay a local count onto the matching locally cached line/session.
+    // Never create rows from queue data or cross a session/warehouse boundary.
+    if (!line || !session || session.id !== row.session_id
+        || session.warehouse_id !== row.warehouse_id) continue;
+    line.counted_qty = Number(row.base_quantity);
+    line.entered_quantity = Number(row.entered_quantity);
+    line.entered_unit = row.entered_unit || row.base_unit || line.base_unit;
+    line.conversion_factor = Number(row.conversion_factor || 1);
+    line.base_unit = row.base_unit || line.base_unit;
+    line.variance = line.counted_qty - Number(line.system_qty || 0);
+    line._count_pending_sync = true;
+    line._count_sync_status = row.status || 'PENDING';
+    line._count_sync_error = row.last_error || null;
+    changed = true;
+  }
+  if (changed) enrichAll();
+}
+
 function repairOutboxIds(op) {
   const tx = op?.payload?.transaction;
   const lines = op?.payload?.lines;
@@ -705,7 +904,7 @@ export async function flushOutbox() {
     try {
       const tx = op.payload?.transaction;
       if (!tx || !offlineTransactionTypeAllowed(tx.transaction_type)) {
-        throw new Error('Offline sync only supports GRN and ISSUE transactions; other vouchers require a live connection.');
+        throw new Error('Offline sync only supports ISSUE transactions; stocktake counts use a separate queue. All other transactions require a live connection.');
       }
       if (!offlineWarehouseAllowed(tx.warehouse_id) || tx.created_by !== window.__session.id) {
         throw new Error('Offline transaction requires exactly one explicitly assigned warehouse and must remain within the current effective scope.');
@@ -717,7 +916,7 @@ export async function flushOutbox() {
         changed = true;
         outboxWrite(list);
       }
-      await rpc('create_transaction_with_lines_v2', {
+      await rpc('create_offline_issue_bundle', {
         p_transaction_id: tx.id,
         p_transaction: tx,
         p_lines: op.payload.lines
@@ -744,12 +943,12 @@ export async function flushOutbox() {
 
 export function queueSnapshot() {
   const out = [];
-  for (const x of masterQueue()) {
-    // Hide ops already reflected & synced lazily; only pending/error shown.
+  for (const x of quarantineLegacyMasterQueue()) {
     out.push({
-      id: x.operation_id, source: 'master', table: x.table, operation: x.kind,
-      status: x.status || 'PENDING', attempts: x.attempts || 0,
-      error: x.last_error || '', time: x.created_at || '', record: x.id
+      id: x.operation_id, source: 'blocked_master', table: x.table || 'legacy master data',
+      operation: x.kind || 'unknown', status: 'CONFLICT', attempts: x.attempts || 0,
+      error: x.last_error || 'Blocked by offline policy; re-enter the change while online.',
+      time: x.created_at || x.policy_blocked_at || '', record: x.id || ''
     });
   }
   for (const x of outbox()) {
@@ -759,6 +958,15 @@ export function queueSnapshot() {
       operation: x.kind || 'transaction_bundle', status: x.status || 'PENDING',
       attempts: x.attempts || 0, error: x.last_error || '', time: x.created_at || '',
       record: x.payload?.transaction?.reference_no || x.payload?.transaction?.id || ''
+    });
+  }
+  for (const x of stocktakeCountQueue()) {
+    if (x.status === 'SYNCED') continue;
+    out.push({
+      id: x.operation_id, source: 'stocktake', table: 'stocktake_lines',
+      operation: 'stocktake_count', status: x.status || 'PENDING',
+      attempts: x.attempts || 0, error: x.last_error || '', time: x.updated_at || x.created_at || '',
+      record: x.line_id || x.session_id || ''
     });
   }
   return out;
@@ -777,8 +985,15 @@ export async function syncAll() {
     const liveSession = await ensureOnlineSession();
     if (!liveSession?.id) throw new Error(signInOnlineMessage());
 
-    const master = await flushMasterQueue();
+    quarantineLegacyMasterQueue();
+    if (store.legacyMasterDataNeedsRefresh) {
+      await pullAll({ silent: true });
+      if (store.legacyMasterDataNeedsRefresh) {
+        throw new Error('Legacy master-data changes were quarantined. A complete online refresh is required before offline ISSUE or stocktake queues can sync.');
+      }
+    }
     const transactions = await flushOutbox();
+    const stocktakeCounts = await flushStocktakeCountQueue();
 
     let refreshError = null;
     try {
@@ -795,10 +1010,10 @@ export async function syncAll() {
 
     // Nothing was written and the server could not be read: report the real
     // failure instead of pretending the app is synchronised.
-    if (!master && !transactions && !q.length && refreshError) throw refreshError;
+    if (!transactions && !stocktakeCounts && !q.length && refreshError) throw refreshError;
 
     return {
-      master, transactions, remaining: q.length, pending, errors, conflicts,
+      transactions, stocktakeCounts, remaining: q.length, pending, errors, conflicts,
       refreshError: refreshError ? String(refreshError?.message || refreshError) : null
     };
   })();
@@ -817,12 +1032,48 @@ export async function syncAll() {
 const VOUCHER_TYPES = new Set(['GRN', 'ISSUE', 'ADJUSTMENT_IN', 'ADJUSTMENT_OUT']);
 const RETURN_TYPES = new Set(['RETURN_FROM_USAGE', 'RETURN_FROM_CUSTOMER', 'RETURN_TO_SUPPLIER']);
 
-export function shouldAutoApprove() {
-  if (AUTO_APPROVE_ROLES.includes(roleOf())) return true;
-  const require = setting('REQUIRE_APPROVAL', true);
-  return require === false || require === 'false' || require === '0';
-}
+export const AUTO_APPROVE_CREATE_PERMISSION = Object.freeze({
+  GRN: 'action:transaction:grn:create',
+  RETURN_FROM_USAGE: 'action:transaction:grn:create',
+  RETURN_FROM_CUSTOMER: 'action:transaction:grn:create',
+  ISSUE: 'action:transaction:issue:create',
+  RETURN_TO_SUPPLIER: 'action:transaction:issue:create',
+  ADJUSTMENT_IN: 'action:transaction:adjustment:create',
+  ADJUSTMENT_OUT: 'action:transaction:adjustment:create',
+  OPENING_BALANCE: 'action:transaction:adjustment:create'
+});
 
+// Mirrors approve_transaction + guard_transaction_status_change.
+// Self-approval is never inferred from role or the global workflow setting.
+// The server evaluates both grants (including scoped denies); this client
+// pre-check is only an optimization and fails closed on any RPC failure.
+export async function shouldAutoApprove(transactionType, warehouseId = null, transactionId = null) {
+  const session = window.__session;
+  if (!session?.id) return false;
+
+  const profile = session.profile?.id === session.id
+    ? session.profile
+    : store.get('profiles').find(row => row.id === session.id) || null;
+  if (!profile || profile.can_approve_without_workflow !== true) return false;
+
+  const normalizedType = String(transactionType || '').toUpperCase();
+  const createPermission = AUTO_APPROVE_CREATE_PERMISSION[normalizedType];
+  if (!createPermission || !warehouseId) return false;
+
+  const context = {
+    resource_type: 'transaction',
+    resource_id: transactionId,
+    warehouse_id: warehouseId,
+    owner_id: session.id,
+    status: 'PENDING_APPROVAL',
+    transaction_type: normalizedType,
+    offline: false
+  };
+  // Local decision only controls whether the client attempts auto-approval.
+  // approve_transaction independently re-evaluates both grants and SoD.
+  return hasEffectiveCachedGrant('action:transaction:auto_approve', context)
+    && hasEffectiveCachedGrant(createPermission, context);
+}
 export async function createTransactionBundle({
   type, warehouse_id, zone_id, section_id, storage_area_id = null,
   supplier = null, receiver_name = null, usage_party = null,
@@ -912,8 +1163,8 @@ export async function createTransactionBundle({
   const assertOfflineEligible = () => {
     if (!offlineTransactionTypeAllowed(normalizedType)) {
       throw new Error(isAr()
-        ? 'دون اتصال: يُسمح بالتوريد والصرف فقط. تحتاج التسويات والمرتجعات إلى اتصال مباشر.'
-        : 'Offline mode supports receipts and issues only. Adjustments and returns require a live connection.');
+        ? 'دون اتصال: يُسمح بالصرف وعدّ الجرد فقط. التوريد والتحويل والاستلام والإرجاع والتسويات وبقية المعاملات تتطلب اتصالاً مباشراً.'
+        : 'Offline mode supports issues and stocktake counts only. Receipts, transfers, receiving, returns, adjustments, and all other transactions require a live connection.');
     }
     if (!offlineWarehouseAllowed(warehouse_id)) {
       throw new Error(isAr()
@@ -946,7 +1197,7 @@ export async function createTransactionBundle({
   }
 
   let approved = false;
-  if (shouldAutoApprove()) {
+  if (await shouldAutoApprove(normalizedType, tx.warehouse_id, tx.id)) {
     try { await rpc('approve_transaction', { p_transaction_id: tx.id }); approved = true; }
     catch (e) { console.warn('[store] auto-approval failed', e); }
   }
@@ -1037,6 +1288,7 @@ export async function createStockReturnRequest({
 /* ── transfers ──────────────────────────────────────────────────────────── */
 
 export async function dispatchTransfer({ orderId, referenceNo, sourceWarehouseId, destinationWarehouseId, lines, notes }) {
+  requireLiveConnection('إنشاء التحويل يتطلب اتصالاً مباشراً.', 'Transfer dispatch requires a live connection.');
   const res = await rpc('dispatch_stock_transfer_order_v3', {
     p_order_id: orderId || uid(),
     p_reference_no: referenceNo || ('TRF-' + Date.now()),
@@ -1050,6 +1302,7 @@ export async function dispatchTransfer({ orderId, referenceNo, sourceWarehouseId
 }
 
 export async function receiveTransfer({ transferId, qty, shelfId, returnRemaining = false, reason = null, operationId = null }) {
+  requireLiveConnection('استلام التحويل يتطلب اتصالاً مباشراً.', 'Transfer receiving requires a live connection.');
   const res = await rpc('receive_stock_transfer_quantity_at_shelf_v2', {
     p_transfer_id: transferId,
     p_received_quantity: Number(qty),
@@ -1063,12 +1316,14 @@ export async function receiveTransfer({ transferId, qty, shelfId, returnRemainin
 }
 
 export async function rejectTransferReceipt(id, reason) {
+  requireLiveConnection('رفض الاستلام يتطلب اتصالاً مباشراً.', 'Receipt rejection requires a live connection.');
   const res = await rpc('reject_stock_transfer_receipt', { p_transfer_id: id, p_reason: reason });
   await pullAll({ silent: true }).catch(() => {});
   return res;
 }
 
 export async function reviewTransferReturn(id, decision, note) {
+  requireLiveConnection('مراجعة طلب الإرجاع تتطلب اتصالاً مباشراً.', 'Return review requires a live connection.');
   const res = await rpc('review_stock_transfer_return_request', {
     p_transfer_id: id, p_decision: decision, p_note: note || null
   });
@@ -1077,6 +1332,7 @@ export async function reviewTransferReturn(id, decision, note) {
 }
 
 export async function confirmTransferReturn(id) {
+  requireLiveConnection('تأكيد الإرجاع يتطلب اتصالاً مباشراً.', 'Return confirmation requires a live connection.');
   const res = await rpc('confirm_stock_transfer_return_v2', { p_transfer_id: id });
   await pullAll({ silent: true }).catch(() => {});
   return res;
@@ -1085,6 +1341,7 @@ export async function confirmTransferReturn(id) {
 /* ── stocktake ──────────────────────────────────────────────────────────── */
 
 export async function createStocktakeSession({ warehouseId, storageAreaId, type = 'CYCLE', mode = 'VISIBLE', notes }) {
+  requireLiveConnection('إنشاء جلسة الجرد يتطلب اتصالاً مباشراً؛ عدّ الكميات فقط يمكن حفظه محلياً.', 'Creating a stocktake session requires a live connection; only count entries can be saved offline.');
   const res = await rpc('create_stocktake_session_with_lines', {
     p_warehouse_id: warehouseId,
     p_storage_area_id: storageAreaId || null,
@@ -1096,6 +1353,142 @@ export async function createStocktakeSession({ warehouseId, storageAreaId, type 
   return res;
 }
 
+function stocktakeCountQueue() {
+  try {
+    const rows = JSON.parse(localStorage.getItem(STOCKTAKE_COUNT_QUEUE_PREFIX + currentUserId()) || '[]');
+    return Array.isArray(rows) ? rows : [];
+  } catch (_) { return []; }
+}
+
+function stocktakeCountQueueWrite(rows) {
+  localStorage.setItem(STOCKTAKE_COUNT_QUEUE_PREFIX + currentUserId(), JSON.stringify(rows));
+  window.dispatchEvent(new CustomEvent('orshap-outbox-changed', {
+    detail: { count: rows.filter(x => !['SYNCED', 'ERROR', 'CONFLICT'].includes(x.status)).length }
+  }));
+}
+
+function queueStocktakeCountLocal(lineId, qty, unitCode, baseUnit, factor, baseQty) {
+  const session = window.__session;
+  const line = byId('stocktake_lines', lineId);
+  const stocktake = line && byId('stocktake_sessions', line.session_id);
+  if (!session?.id || !line || !stocktake || stocktake.status !== 'IN_PROGRESS'
+      || !['DRAFT', 'REJECTED'].includes(String(stocktake.review_status || 'DRAFT').toUpperCase())) {
+    throw new Error(isAr()
+      ? 'لا يمكن حفظ العد دون اتصال: جلسة الجرد غير موجودة محلياً أو لم تعد قابلة للعد.'
+      : 'Cannot queue this count offline: the session is unavailable locally or is no longer editable.');
+  }
+  if (!offlineWarehouseAllowed(stocktake.warehouse_id)) {
+    throw new Error(isAr()
+      ? 'العد دون اتصال مسموح فقط لمستخدم معيّن لمستودع واحد، وضمن ذلك المستودع.'
+      : 'Offline counting requires exactly one explicitly assigned warehouse and that session must belong to it.');
+  }
+  const countContext = {
+    resource_type: 'stocktake_session',
+    resource_id: stocktake.id,
+    warehouse_id: stocktake.warehouse_id,
+    owner_id: stocktake.created_by,
+    status: stocktake.status,
+    review_status: stocktake.review_status,
+    offline: true,
+    line_id: lineId,
+    item_id: line.item_id,
+    shelf_id: line.shelf_id
+  };
+  if (!hasEffectiveCachedGrant('action:stocktake:count', countContext)
+      && !hasEffectiveCachedGrant('action:stocktake:manage', countContext)) {
+    throw new Error(isAr()
+      ? 'لا تملك تفويض عدّ الجرد لهذه الجلسة.'
+      : 'You do not have an explicit stocktake-count grant for this session.');
+  }
+  const now = new Date().toISOString();
+  const rows = stocktakeCountQueue();
+  const existing = rows.find(x => x.user_id === session.id && x.session_id === stocktake.id && x.line_id === lineId);
+  const payload = {
+    operation_id: existing?.operation_id || (window.crypto?.randomUUID ? window.crypto.randomUUID() : `stkcount-${session.id}-${stocktake.id}-${lineId}`),
+    user_id: session.id, session_id: stocktake.id, line_id: lineId, item_id: line.item_id,
+    warehouse_id: stocktake.warehouse_id, quantity: Number(qty), entered_quantity: Number(qty),
+    entered_unit: unitCode, base_unit: baseUnit, conversion_factor: Number(factor),
+    base_quantity: Number(baseQty), status: 'PENDING', attempts: existing?.attempts || 0,
+    created_at: existing?.created_at || now, updated_at: now, last_error: null
+  };
+  if (existing) Object.assign(existing, payload);
+  else rows.push(payload);
+  stocktakeCountQueueWrite(rows);
+  line.counted_qty = Number(baseQty);
+  line.entered_quantity = Number(qty);
+  line.entered_unit = unitCode;
+  line.conversion_factor = Number(factor);
+  line.base_unit = baseUnit;
+  line.variance = Number(baseQty) - Number(line.system_qty || 0);
+  line._count_pending_sync = true;
+  persist(true);
+  store.emit();
+  return { counted_qty: Number(baseQty), entered_quantity: Number(qty), entered_unit: unitCode,
+    conversion_factor: Number(factor), base_unit: baseUnit, pending_sync: true };
+}
+
+async function flushStocktakeCountQueue() {
+  if (!navigator.onLine || !window.__session?.id || !(await ensureOnlineSession())) return 0;
+  await pullAll({ silent: true });
+  const rows = stocktakeCountQueue();
+  // Read current factors directly from Supabase; pullAll can preserve stale data
+  // when an optional table request fails, so it is not sufficient for this check.
+  const alternateRows = rows.filter(row => row.user_id === window.__session.id
+    && !['SYNCED', 'ERROR', 'CONFLICT'].includes(row.status)
+    && row.entered_unit
+    && normalizeUnitCode(row.entered_unit) !== normalizeUnitCode(row.base_unit));
+  let freshConversions = null;
+  if (alternateRows.length) {
+    const itemIds = [...new Set(alternateRows.map(row => row.item_id).filter(Boolean))];
+    const client = await sb();
+    const result = await client.from('item_unit_conversions')
+      .select('item_id,unit_code,factor_to_base')
+      .in('item_id', itemIds);
+    if (result.error || !Array.isArray(result.data)) {
+      throw new Error('Could not verify current unit conversion factors; counts remain pending.');
+    }
+    freshConversions = result.data;
+  }
+  let done = 0, changed = false;
+  for (const row of rows) {
+    if (row.user_id !== window.__session.id || ['SYNCED', 'ERROR', 'CONFLICT'].includes(row.status)) continue;
+    try {
+      if (!offlineWarehouseAllowed(row.warehouse_id)) {
+        throw new Error('Offline stocktake count belongs to a warehouse outside the current single-warehouse offline scope.');
+      }
+      if (row.entered_unit && normalizeUnitCode(row.entered_unit) !== normalizeUnitCode(row.base_unit)) {
+        const currentUnit = freshConversions?.find(c => c.item_id === row.item_id
+          && normalizeUnitCode(c.unit_code) === normalizeUnitCode(row.entered_unit));
+        const currentFactor = Number(currentUnit?.factor_to_base);
+        const savedFactor = Number(row.conversion_factor);
+        if (!currentUnit || !Number.isFinite(currentFactor) || currentFactor <= 0 || !Number.isFinite(savedFactor) || Math.abs(currentFactor - savedFactor) > 1e-9) {
+          throw new Error('Unit conversion factor changed; review and re-enter this offline count.');
+        }
+      } 
+      const expectedFactor = Number(row.conversion_factor || 1);
+      await rpc('save_offline_stocktake_count_v2', {
+        p_line_id: row.line_id,
+        p_entered_quantity: row.entered_quantity,
+        p_entered_unit: row.entered_unit || row.base_unit,
+        p_expected_factor: expectedFactor,
+        p_operation_id: row.operation_id
+      });
+      row.status = 'SYNCED'; row.synced_at = new Date().toISOString(); row.last_error = null;
+      changed = true; done++;
+    } catch (e) {
+      row.attempts = (row.attempts || 0) + 1;
+      row.last_error = String(e?.message || e);
+      row.status = isNetworkFailure(e) ? 'PENDING'
+        : (/unit|factor|quantity|count|session|permission|scope|not found|editable|review|status/i.test(row.last_error) ? 'CONFLICT' : 'ERROR');
+      changed = true;
+      if (row.status === 'PENDING') break;
+    }
+  }
+  if (changed) stocktakeCountQueueWrite(rows.filter(x => x.status !== 'SYNCED'));
+  if (done) await pullAll({ silent: true }).catch(() => {});
+  return done;
+}
+
 export async function saveStocktakeCount(lineId, qty, enteredUnit = null) {
   const line = byId('stocktake_lines', lineId);
   const baseUnit = normalizeUnitCode(line?.base_unit || store.byId('items', line?.item_id)?.base_unit || 'PCS');
@@ -1104,6 +1497,8 @@ export async function saveStocktakeCount(lineId, qty, enteredUnit = null) {
   let factor = 1;
   let res;
 
+  if (!Number.isFinite(Number(qty)) || Number(qty) < 0) throw new Error(isAr() ? 'أدخل كمية صحيحة غير سالبة.' : 'Enter a valid non-negative quantity.');
+  if (!line) throw new Error(isAr() ? 'سطر الجرد غير موجود.' : 'Stocktake line not found.');
   if (enteredUnit && unitCode !== baseUnit) {
     const units = unitOptions(line?.item_id);
     const unit = units.find(u => u.value === unitCode);
@@ -1114,14 +1509,23 @@ export async function saveStocktakeCount(lineId, qty, enteredUnit = null) {
     }
     factor = Number(unit.factor);
     baseQty = Number(qty) * factor;
-    res = await rpc('save_stocktake_count_v2', {
+  }
+  // Offline mode queues only counts for an already-created editable server session.
+  // Session creation, submission, review and settlement remain online-only.
+  if (!navigator.onLine || window.__session?.offline) {
+    return queueStocktakeCountLocal(lineId, Number(qty), unitCode, baseUnit, factor, baseQty);
+  }
+  try {
+    res = await rpc('save_stocktake_count_v3', {
       p_line_id: lineId,
       p_entered_quantity: Number(qty),
-      p_entered_unit: unitCode
+      p_entered_unit: unitCode,
+      p_expected_factor: factor
     });
     baseQty = Number(res?.counted_qty ?? baseQty);
-  } else {
-    res = await rpc('save_stocktake_count', { p_line_id: lineId, p_counted_qty: Number(qty) });
+  } catch (e) {
+    if (isNetworkFailure(e)) return queueStocktakeCountLocal(lineId, Number(qty), unitCode, baseUnit, factor, baseQty);
+    throw e;
   }
 
   if (line) {
@@ -1138,12 +1542,14 @@ export async function saveStocktakeCount(lineId, qty, enteredUnit = null) {
 }
 
 export async function submitStocktake(sessionId) {
+  requireLiveConnection('إرسال الجرد للمراجعة يتطلب اتصالاً مباشراً.', 'Submitting a stocktake for review requires a live connection.');
   const res = await rpc('submit_stocktake_for_review', { p_session_id: sessionId });
   await pullAll({ silent: true }).catch(() => {});
   return res;
 }
 
 export async function reviewStocktake(sessionId, approve, comment) {
+  requireLiveConnection('مراجعة الجرد واعتماده يتطلبان اتصالاً مباشراً.', 'Stocktake review and approval require a live connection.');
   const res = await rpc('review_stocktake_session', {
     p_session_id: sessionId, p_approve: !!approve, p_comment: comment || null
   });
@@ -1152,6 +1558,7 @@ export async function reviewStocktake(sessionId, approve, comment) {
 }
 
 export async function settleStocktake(sessionId, lineIds, direction, comments = {}) {
+  requireLiveConnection('تسوية فروقات الجرد تتطلب اتصالاً مباشراً.', 'Stocktake variance settlement requires a live connection.');
   const res = await rpc('process_stocktake_settlement_with_direction', {
     p_session_id: sessionId, p_line_ids: lineIds,
     p_direction: direction, p_line_comments: comments || {}
@@ -1161,6 +1568,7 @@ export async function settleStocktake(sessionId, lineIds, direction, comments = 
 }
 
 export async function closeStocktake(sessionId) {
+  requireLiveConnection('إغلاق الجرد يتطلب اتصالاً مباشراً.', 'Closing a stocktake requires a live connection.');
   const res = await rpc('close_stocktake_session_direct', { p_session_id: sessionId });
   await pullAll({ silent: true }).catch(() => {});
   return res;

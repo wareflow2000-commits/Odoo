@@ -390,8 +390,20 @@ function reportData(kind) {
           }
         }
         const operationalRows = periodRows.filter(l => !openingBaselineRows.has(l));
-        const inbound = operationalRows.reduce((sum, l) => sum + Math.max(0, Number(l.delta || 0)), 0);
-        const outbound = operationalRows.reduce((sum, l) => sum + Math.max(0, -Number(l.delta || 0)), 0);
+        const movementType = l => String(l?.source_type || '').toUpperCase();
+        const isTransferOut = l => movementType(l) === 'ADJUSTMENT_OUT'
+          && (Boolean(l?.metadata?.transfer_id) || String(l?.source_ref || '').toUpperCase().startsWith('TRF-'));
+        const isTransferIn = l => movementType(l) === 'TRANSFER_IN';
+        const isTransferReturn = l => movementType(l) === 'TRANSFER_RETURN';
+        const regularRows = operationalRows.filter(l => !isTransferOut(l) && !isTransferIn(l) && !isTransferReturn(l));
+        const inbound = regularRows.reduce((sum, l) => sum + Math.max(0, Number(l.delta || 0)), 0);
+        const outbound = regularRows.reduce((sum, l) => sum + Math.max(0, -Number(l.delta || 0)), 0);
+        const transferReceived = operationalRows.filter(isTransferIn)
+          .reduce((sum, l) => sum + Math.max(0, Number(l.delta || 0)), 0);
+        const transferReturned = operationalRows.filter(isTransferReturn)
+          .reduce((sum, l) => sum + Math.max(0, Number(l.delta || 0)), 0);
+        const transferDispatched = operationalRows.filter(isTransferOut)
+          .reduce((sum, l) => sum + Math.max(0, -Number(l.delta || 0)), 0);
         const closing = [...group.buckets.values()].reduce((sum, bucketRows) => sum + balanceAt(bucketRows, toAt), 0);
 
         if (!periodRows.length && Math.abs(opening) < 1e-9 && Math.abs(closing) < 1e-9) continue;
@@ -406,7 +418,10 @@ function reportData(kind) {
             group.warehouseId ? warehouseName(group.warehouseId) : '—',
             Math.abs(opening) < 1e-10 ? 0 : opening,
             Math.abs(inbound) < 1e-10 ? 0 : inbound,
+            Math.abs(transferReceived) < 1e-10 ? 0 : transferReceived,
+            Math.abs(transferReturned) < 1e-10 ? 0 : transferReturned,
             Math.abs(outbound) < 1e-10 ? 0 : outbound,
+            Math.abs(transferDispatched) < 1e-10 ? 0 : transferDispatched,
             Math.abs(closing) < 1e-10 ? 0 : closing]
         });
       }
@@ -416,9 +431,10 @@ function reportData(kind) {
       return {
         headers: [h('رمز الصنف', 'SKU'), h('الصنف', 'Item'), h('الوحدة الأساسية', 'Base unit'),
           h('المستودع', 'Warehouse'), h('رصيد أول المدة', 'Opening balance'),
-          h('إجمالي الوارد', 'Total inbound'), h('إجمالي المنصرف', 'Total outbound'),
-          h('رصيد آخر المدة', 'Closing balance')],
-        rows: reportRows.map(r => r.values), numeric: [4, 5, 6, 7]
+          h('وارد التوريدات والتسويات', 'Regular inbound'), h('وارد التحويلات', 'Transfer received'),
+          h('مرتجع التحويلات', 'Transfer returned'), h('منصرف الاستخدام', 'Operational outbound'),
+          h('صادر التحويلات', 'Transfer dispatched'), h('رصيد آخر المدة', 'Closing balance')],
+        rows: reportRows.map(r => r.values), numeric: [4, 5, 6, 7, 8, 9, 10]
       };
     }
 

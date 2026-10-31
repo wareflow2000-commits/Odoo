@@ -17,10 +17,11 @@ import {
   rejectTransaction, requestTransactionReference,
   offlineTransactionTypeAllowed, offlineWarehouseAllowed,
   itemLabel, warehouseName, shelfPath, shelfOptions, shelvesForItem,
-  warehouseOptions, itemOptions, unitOptions
+  warehouseOptions, itemOptions, unitOptions, hasAnyEffectiveCachedGrant
 } from './core-store.js';
 import {
-  canApproveTransactions, isElevated, can, role, canAccessWarehouse
+  canApproveTransactions, canDatabasePermission, canCreateTransactionType,
+  role, canAccessWarehouse
 } from './core-rbac.js';
 import {
   fmtDateTime, fmtNum, txLabel, statusLabel, todayISO
@@ -87,6 +88,12 @@ function availableQty(itemId, shelfId, batchNo = null) {
 }
 
 function rowHtml(t) {
+  const pending = ['PENDING_APPROVAL', 'PENDING'].includes(t.status);
+  const approveAllowed = pending && canApproveTransactions(t);
+  const rejectAllowed = pending && canDatabasePermission('action:transaction:reject', {
+    resource_type: 'transaction', resource_id: t.id, warehouse_id: t.warehouse_id,
+    owner_id: t.created_by, status: t.status, transaction_type: t.transaction_type
+  });
   return `<tr>
     <td><span class="o_cell_main">${escHtml(t.reference_no || '—')}</span>
       ${t.external_reference ? `<div class="o_cell_sub">${escHtml(t.external_reference)}</div>` : ''}</td>
@@ -99,9 +106,8 @@ function rowHtml(t) {
     <td><div class="o_actions_cell">
       <button class="o_btn o_btn_ghost o_btn_sm" data-view="${escHtml(t.id)}" title="${tx('تفاصيل', 'Details')}"><i class="fa-solid fa-eye"></i></button>
       <button class="o_btn o_btn_ghost o_btn_sm" data-print="${escHtml(t.id)}" title="${tx('طباعة', 'Print')}"><i class="fa-solid fa-print"></i></button>
-      ${canApproveTransactions() && ['PENDING_APPROVAL', 'PENDING'].includes(t.status)
-        ? `<button class="o_btn o_btn_success o_btn_sm" data-approve="${escHtml(t.id)}">${tx('اعتماد', 'Approve')}</button>
-           <button class="o_btn o_btn_danger o_btn_sm" data-reject="${escHtml(t.id)}">${tx('رفض', 'Reject')}</button>` : ''}
+      ${approveAllowed ? `<button class="o_btn o_btn_success o_btn_sm" data-approve="${escHtml(t.id)}">${tx('اعتماد', 'Approve')}</button>` : ''}
+      ${rejectAllowed ? `<button class="o_btn o_btn_danger o_btn_sm" data-reject="${escHtml(t.id)}">${tx('رفض', 'Reject')}</button>` : ''}
     </div></td>
   </tr>`;
 }
@@ -153,7 +159,7 @@ function filterHtml() {
 }
 
 function canViewRegister() {
-  return isElevated() || can('table:transactions:view');
+  return canDatabasePermission('table:transactions:view');
 }
 
 function render() {
@@ -163,8 +169,8 @@ function render() {
       + card('', empty(tx('لا تملك صلاحية عرض السندات', 'You do not have permission to view vouchers')));
   }
   const canNew = ['GRN', 'ISSUE', 'ADJUSTMENT_IN', 'ADJUSTMENT_OUT'].some(canCreateType);
-  const canCustomerReturn = isElevated() || can('action:transaction:grn:create');
-  const canSupplierReturn = isElevated() || can('action:transaction:issue:create');
+  const canCustomerReturn = hasAnyEffectiveCachedGrant('action:transaction:grn:create');
+  const canSupplierReturn = hasAnyEffectiveCachedGrant('action:transaction:issue:create');
   const actions = `${canNew ? btn(`<i class="fa-solid fa-plus"></i> ${tx('سند جديد', 'New voucher')}`, 'onclick="OW.wms.newTx()"', 'primary') : ''}
     ${canCustomerReturn ? btn(`<i class="fa-solid fa-rotate-left"></i> ${tx('مرتجع من عميل', 'Customer return')}`, 'onclick="OW.wms.openReturn(\'RETURN_FROM_CUSTOMER\')"', 'secondary') : ''}
     ${canCustomerReturn ? btn(`<i class="fa-solid fa-arrow-rotate-left"></i> ${tx('مرتجع من الاستخدام', 'Return from usage')}`, 'onclick="OW.wms.openReturn(\'RETURN_FROM_USAGE\')"', 'secondary') : ''}
@@ -271,11 +277,8 @@ function accessibleWarehouseOptions() {
   return warehouseOptions().filter(o => canAccessWarehouse(o.value));
 }
 
-function canCreateType(type) {
-  const t = String(type || '').toUpperCase();
-  if (t === 'GRN' || t.startsWith('RETURN_FROM')) return isElevated() || can('action:transaction:grn:create');
-  if (t === 'ISSUE' || t === 'RETURN_TO_SUPPLIER') return isElevated() || can('action:transaction:issue:create');
-  return isElevated() || can('action:transaction:adjustment:create');
+function canCreateType(type, warehouseId = null) {
+  return canCreateTransactionType(type, warehouseId);
 }
 
 function availableLabel(itemId, shelfId, batchNo) {
@@ -610,8 +613,8 @@ function collectDraft(root, lines) {
   if (!canCreateType(type)) errors.push(tx('لا تملك صلاحية إنشاء هذا النوع من السندات.', 'You do not have permission to create this voucher type.'));
   if (!navigator.onLine || provisional) {
     if (!offlineTransactionTypeAllowed(type)) {
-      errors.push(tx('دون اتصال: يُسمح بالتوريد والصرف فقط. تحتاج التسويات إلى اتصال مباشر.',
-        'Offline mode supports receipts and issues only. Adjustments require a live connection.'));
+      errors.push(tx('دون اتصال: يُسمح بالصرف فقط، وعدّ الجرد عبر مساره المخصص. تتطلب بقية المعاملات اتصالاً مباشراً.',
+        'Offline mode supports issues only; stocktake counts use their dedicated queue. All other transactions require a live connection.'));
     }
     if (!offlineWarehouseAllowed(warehouseId)) {
       errors.push(tx('دون اتصال: يلزم مستودع واحد معيّن صراحةً لحسابك.',
@@ -745,6 +748,9 @@ function openReview(root, draft, closeTx) {
         if (draft.errors.length) return;
         confirm.disabled = true;
         try {
+          if (!canCreateType(draft.payload.type, draft.payload.warehouse_id)) {
+            throw new Error(tx('لا تملك تفويض إنشاء هذا النوع من السندات في المستودع المحدد.', 'You do not have a create grant for this voucher type in the selected warehouse.'));
+          }
           const result = await createTransactionBundle(draft.payload);
           closeReview();
           closeTx();
@@ -828,7 +834,11 @@ function detailTable(t) {
 function openTransaction(id) {
   const t = store.byId('transactions', id);
   if (!t) return;
-  const canAct = canApproveTransactions() && ['PENDING_APPROVAL', 'PENDING'].includes(t.status);
+  const canApprove = canApproveTransactions(t) && ['PENDING_APPROVAL', 'PENDING'].includes(t.status);
+  const canReject = canDatabasePermission('action:transaction:reject', {
+    resource_type: 'transaction', resource_id: t.id, warehouse_id: t.warehouse_id,
+    owner_id: t.created_by, status: t.status, transaction_type: t.transaction_type
+  }) && ['PENDING_APPROVAL', 'PENDING'].includes(t.status);
   const body = `<div class="o_detail_head">
       <div><span class="o_detail_ref">${escHtml(t.reference_no || '—')}</span> ${statusBadge(t.status, statusLabel(t.status))}</div>
       <div class="o_detail_type">${txLabel(t.transaction_type)}</div>
@@ -845,12 +855,12 @@ function openTransaction(id) {
     body,
     footer: `<button class="o_btn o_btn_secondary" id="txViewClose">${tx('إغلاق', 'Close')}</button>
       <button class="o_btn o_btn_ghost" id="txViewPrint"><i class="fa-solid fa-print"></i> ${tx('طباعة', 'Print')}</button>
-      ${canAct ? `<button class="o_btn o_btn_danger" id="txViewReject">${tx('رفض', 'Reject')}</button>
-        <button class="o_btn o_btn_success" id="txViewApprove">${tx('اعتماد', 'Approve')}</button>` : ''}`,
+      ${canReject ? `<button class="o_btn o_btn_danger" id="txViewReject">${tx('رفض', 'Reject')}</button>` : ''}
+      ${canApprove ? `<button class="o_btn o_btn_success" id="txViewApprove">${tx('اعتماد', 'Approve')}</button>` : ''}`,
     onMount: (el, close) => {
       el.querySelector('#txViewClose').onclick = close;
       el.querySelector('#txViewPrint').onclick = () => printTransaction(t);
-      if (canAct) {
+      if (canApprove) {
         el.querySelector('#txViewApprove').onclick = async () => {
           const ok = await confirmDialog({
             title: tx('اعتماد السند', 'Approve voucher'),
@@ -865,6 +875,8 @@ function openTransaction(id) {
             reloadTransactions();
           } catch (e) { toast(escHtml(friendlyError(e)), 'error'); }
         };
+      }
+      if (canReject) {
         el.querySelector('#txViewReject').onclick = async () => {
           const reason = await promptDialog({
             title: tx('رفض السند', 'Reject voucher'),
@@ -888,6 +900,7 @@ function openTransaction(id) {
 async function doApprove(id) {
   const t = store.byId('transactions', id);
   if (!t) return;
+  if (!canApproveTransactions(t)) return toast(tx('لا تملك تفويض اعتماد هذا السند.', 'You do not have an approval grant for this voucher.'), 'error');
   const ok = await confirmDialog({
     title: tx('اعتماد السند', 'Approve voucher'),
     message: `${t.reference_no || ''} — ${tx('سيتم ترحيل الكميات إلى المخزون.', 'Quantities will be posted to stock.')}`,
@@ -902,6 +915,12 @@ async function doApprove(id) {
 }
 
 async function doReject(id) {
+  const t = store.byId('transactions', id);
+  if (!t) return;
+  if (!canDatabasePermission('action:transaction:reject', {
+    resource_type: 'transaction', resource_id: t.id, warehouse_id: t.warehouse_id,
+    owner_id: t.created_by, status: t.status, transaction_type: t.transaction_type
+  })) return toast(tx('لا تملك تفويض رفض هذا السند.', 'You do not have a rejection grant for this voucher.'), 'error');
   const reason = await promptDialog({
     title: tx('رفض السند', 'Reject voucher'),
     label: tx('سبب الرفض', 'Rejection reason'),
@@ -958,9 +977,13 @@ function exportTxs() {
 function openReturn(type) {
   const returnType = String(type || 'RETURN_FROM_CUSTOMER').toUpperCase();
   const permission = returnType === 'RETURN_TO_SUPPLIER' ? 'action:transaction:issue:create' : 'action:transaction:grn:create';
-  if (!(isElevated() || can(permission))) return toast(tx('لا تملك صلاحية إنشاء هذا المرتجع.', 'You do not have permission to create this return.'), 'error');
+  const returnId = uid();
   const warehouses = accessibleWarehouseOptions();
-  const warehouseId = warehouses[0]?.value || '';
+  const warehouseId = warehouses.find(option => canDatabasePermission(permission, {
+    resource_type: 'transaction', resource_id: returnId, warehouse_id: option.value,
+    owner_id: window.__session?.id, transaction_type: returnType, return_request: true
+  }))?.value || '';
+  if (!warehouseId) return toast(tx('لا تملك صلاحية إنشاء هذا المرتجع في أي من مستودعاتك.', 'You do not have permission to create this return in any of your accessible warehouses.'), 'error');
   const shelves = shelfOptions({ warehouseId });
   const title = returnType === 'RETURN_TO_SUPPLIER'
     ? tx('مرتجع إلى مورد', 'Return to supplier')
@@ -1062,6 +1085,10 @@ function openReturn(type) {
         if (!reference || /^LOCAL-/i.test(reference)) problems.push(tx('انتظر توليد رقم السند الرسمي. المرتجعات تتطلب اتصالاً مباشراً.',
           'Wait for the official voucher reference. Returns require a live connection.'));
         if (!data.warehouse_id) problems.push(tx('اختر المستودع.', 'Select a warehouse.'));
+        if (data.warehouse_id && !canDatabasePermission(permission, {
+          resource_type: 'transaction', resource_id: returnId, warehouse_id: data.warehouse_id,
+          owner_id: window.__session?.id, transaction_type: returnType, return_request: true
+        })) problems.push(tx('لا تملك تفويض إنشاء هذا المرتجع في المستودع المحدد.', 'You do not have a create grant for this return in the selected warehouse.'));
         if (!data.item_id) problems.push(tx('اختر الصنف.', 'Select an item.'));
         if (!data.shelf_id || !shelfRow || shelfRow.warehouse_id !== data.warehouse_id) problems.push(tx('اختر رفاً يتبع المستودع.', 'Select a shelf in that warehouse.'));
         if (!Number.isFinite(q) || q <= 0) problems.push(tx('أدخل كمية موجبة.', 'Enter a positive quantity.'));
@@ -1078,6 +1105,7 @@ function openReturn(type) {
         createBtn.disabled = true;
         try {
           await createStockReturnRequest({
+            returnId,
             returnType,
             referenceNo: reference,
             itemId: data.item_id,
@@ -1104,9 +1132,12 @@ function openReturn(type) {
 
 /* ── opening balances (manager-only atomic RPC) ────────────────────────── */
 
-function openingBalanceAllowed() {
-  return ['SUPER_ADMIN', 'MANAGER'].includes(String(role() || '').toUpperCase())
-    && can('action:transaction:adjustment:create');
+function openingBalanceAllowed(warehouseId = null) {
+  if (!warehouseId) return hasAnyEffectiveCachedGrant('action:transaction:opening_balance:create');
+  return canDatabasePermission('action:transaction:opening_balance:create', {
+    resource_type: 'transaction', warehouse_id: warehouseId,
+    owner_id: window.__session?.id, transaction_type: 'OPENING_BALANCE', offline: false
+  });
 }
 
 function activeRows(table) {
@@ -1339,7 +1370,9 @@ async function submitOpeningRows(rows, close) {
   if (!navigator.onLine) throw new Error(tx('يتطلب إنشاء الأرصدة اتصالاً مباشراً بقاعدة البيانات.', 'Opening-balance creation requires a live database connection.'));
   const liveSession = await ensureOnlineSession();
   if (!liveSession?.id) throw new Error(tx('يتطلب إنشاء الأرصدة جلسة خادم نشطة. سجّل الدخول عبر الإنترنت ثم أعد المحاولة.', 'Opening balances require an active server session. Sign in online and try again.'));
-  if (!openingBalanceAllowed()) throw new Error(tx('إنشاء الأرصدة الافتتاحية متاح للمدير أو المدير الأعلى فقط.', 'Opening balances are restricted to managers and super administrators.'));
+  if (rows.some(row => !openingBalanceAllowed(row.warehouse_id))) {
+    throw new Error(tx('لا تملك تفويض إنشاء الأرصدة الافتتاحية في أحد المستودعات المحددة.', 'You do not have an opening-balance grant for one of the selected warehouses.'));
+  }
   const grouped = new Map();
   const dupes = new Set();
   for (const raw of rows) {
