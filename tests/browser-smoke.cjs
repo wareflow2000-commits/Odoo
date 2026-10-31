@@ -123,6 +123,63 @@ const fs = require('fs');
       throw new Error('Transfer movement report classification failed: ' + JSON.stringify(transferReportChecks));
     }
 
+    // Validate report period boundaries and opening balance reconstruction from the ledger.
+    // The prior-month opening is the carry-forward; start-of-period and final millisecond
+    // are included, while the first instant of the next day is excluded.
+    const periodReportChecks = await page.evaluate(async () => {
+      const { store } = await import('/core-store.js');
+      const { todayISO } = await import('/core-utils.js');
+      const original = {
+        items: store.data.items,
+        warehouses: store.data.warehouses,
+        ledger: store.data.inventory_ledger
+      };
+      const itemId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+      const warehouseId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+      const shelfId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+      try {
+        const [year, month, day] = todayISO().split('-').map(Number);
+        const at = (date) => date.toISOString();
+        const priorMonthEnd = new Date(year, month - 1, 0, 23, 59, 59, 999);
+        const periodStart = new Date(year, month - 1, 1, 0, 0, 0, 0);
+        const periodEnd = new Date(year, month - 1, day, 23, 59, 59, 999);
+        const nextDayStart = new Date(year, month - 1, day + 1, 0, 0, 0, 0);
+        store.data.items = [{ id: itemId, code: 'SKU-REPORT-PERIOD', name_en: 'Period test item', base_unit: 'PCS' }];
+        store.data.warehouses = [{ id: warehouseId, name: 'Period report warehouse' }];
+        store.data.inventory_ledger = [
+          { id: 'period-1', item_id: itemId, warehouse_id: warehouseId, shelf_id: shelfId, batch_no: 'P1',
+            source_type: 'OPENING_BALANCE', source_ref: 'OPEN-PERIOD', occurred_at: at(priorMonthEnd), created_at: at(priorMonthEnd),
+            delta: 100, running_balance: 100 },
+          { id: 'period-2', item_id: itemId, warehouse_id: warehouseId, shelf_id: shelfId, batch_no: 'P1',
+            source_type: 'GRN', source_ref: 'GRN-START-BOUNDARY', occurred_at: at(periodStart), created_at: at(periodStart),
+            delta: 20, running_balance: 120 },
+          { id: 'period-3', item_id: itemId, warehouse_id: warehouseId, shelf_id: shelfId, batch_no: 'P1',
+            source_type: 'ISSUE', source_ref: 'ISSUE-END-BOUNDARY', occurred_at: at(periodEnd), created_at: at(periodEnd),
+            delta: -5, running_balance: 115 },
+          { id: 'period-4', item_id: itemId, warehouse_id: warehouseId, shelf_id: shelfId, batch_no: 'P1',
+            source_type: 'GRN', source_ref: 'GRN-NEXT-DAY', occurred_at: at(nextDayStart), created_at: at(nextDayStart),
+            delta: 50, running_balance: 165 }
+        ];
+        const report = window.OW.wms.reports.reportData('tx-summary');
+        const row = report.rows.find(value => value[0] === 'SKU-REPORT-PERIOD'
+          && value[3] === 'Period report warehouse');
+        return {
+          found: Boolean(row),
+          values: row ? row.slice(4) : [],
+          correct: Boolean(row) && row[4] === 100 && row[5] === 20
+            && row[6] === 0 && row[7] === 0 && row[8] === 5
+            && row[9] === 0 && row[10] === 115
+        };
+      } finally {
+        store.data.items = original.items;
+        store.data.warehouses = original.warehouses;
+        store.data.inventory_ledger = original.ledger;
+      }
+    });
+    if (!periodReportChecks.correct) {
+      throw new Error('Report period/opening-balance reconciliation failed: ' + JSON.stringify(periodReportChecks));
+    }
+
     // Exercise the real store module in Chromium with isolated in-memory fixtures.
     // No Supabase writes are performed: the browser is deliberately put offline.
     const offlineChecks = await page.evaluate(async () => {
