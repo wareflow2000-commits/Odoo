@@ -6,8 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 app.setName('OW');
-app.disableHardwareAcceleration = app.disableHardwareAcceleration || (() => {});
-const APP_ROOT = app.isPackaged ? process.resourcesPath + '/app' : path.resolve(__dirname, '..');
+const APP_ROOT = app.isPackaged ? app.getAppPath() : path.resolve(__dirname, '..');
 const HOST = '127.0.0.1';
 const PORT = 47831;
 const MIME = {
