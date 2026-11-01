@@ -517,7 +517,7 @@ function renderAuthorization(banned) {
                 : grantStatus(g) === 'EXPIRED' ? badge(tx('منتهية', 'Expired'), 'gray')
                 : grantStatus(g) === 'SCHEDULED' ? badge(tx('مجدولة', 'Scheduled'), 'blue')
                 : badge(tx('فعالة', 'Active'), 'green'),
-              !canWrite || g.revoked_at ? '' : `<button class="o_btn o_btn_ghost o_btn_sm" data-auth-revoke="${g.id}" title="${tx('إلغاء المنحة', 'Revoke grant')}" aria-label="${tx('إلغاء المنحة', 'Revoke grant')}"><i class="fa-solid fa-ban"></i></button>`
+              !canWrite || grantStatus(g) === 'REVOKED' || grantStatus(g) === 'EXPIRED' ? '' : `<button class="o_btn o_btn_ghost o_btn_sm" data-auth-revoke="${g.id}" title="${tx('إلغاء المنحة', 'Revoke grant')}" aria-label="${tx('إلغاء المنحة', 'Revoke grant')}"><i class="fa-solid fa-ban"></i></button>`
             ]
           })),
           { emptyTitle: tx('لا توجد منح تفويض', 'No authorization grants') }
