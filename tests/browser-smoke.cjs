@@ -51,6 +51,57 @@ const fs = require('fs');
       throw new Error('Settings tab render checks failed: ' + JSON.stringify(settingsTabChecks));
     }
 
+    // Render the institutional role scope controls with isolated in-memory data.
+    // This verifies that the UI reads the saved role scope and offers all three
+    // supported modes without performing any database writes.
+    const roleScopeUiChecks = await page.evaluate(async () => {
+      const { store } = await import('/core-store.js');
+      const original = {
+        session: window.__session,
+        permissions: store.data.permissions,
+        rolePermissions: store.data.role_permissions,
+        roleScopes: store.data.role_warehouse_scopes,
+        warehouses: store.data.warehouses
+      };
+      const warehouseId = '12121212-1212-4212-8212-121212121212';
+      try {
+        window.__session = {
+          id: 'role-scope-ui-superadmin',
+          role: 'SUPER_ADMIN',
+          profile: { id: 'role-scope-ui-superadmin', role: 'SUPER_ADMIN' }
+        };
+        store.data.permissions = [{ key: 'page:inventory:access', description: 'Inventory page' }];
+        store.data.role_permissions = [{ role_name: 'CLERK', permission_key: 'page:inventory:access' }];
+        store.data.role_warehouse_scopes = [{
+          role_name: 'CLERK', scope_mode: 'SELECTED', warehouse_ids: [warehouseId]
+        }];
+        store.data.warehouses = [{ id: warehouseId, code: 'TEST-01', name: 'Scope UI test warehouse' }];
+        window.OW.wms.settingsTab('roles');
+        const html = window.OW.pages.settings.render();
+        const selectedScope = html.includes('id="roleScopeMode"')
+          && html.includes('value="SELECTED" selected')
+          && html.includes('data-role-warehouse="' + warehouseId + '" checked')
+          && html.includes('roleScopeWarehouses');
+        store.data.role_warehouse_scopes = [{ role_name: 'CLERK', scope_mode: 'ALL', warehouse_ids: [] }];
+        const allHtml = window.OW.pages.settings.render();
+        const allScope = allHtml.includes('value="ALL" selected');
+        store.data.role_warehouse_scopes = [{ role_name: 'CLERK', scope_mode: 'INHERIT', warehouse_ids: [] }];
+        const inheritHtml = window.OW.pages.settings.render();
+        const inheritScope = inheritHtml.includes('value="INHERIT" selected');
+        return { selectedScope, allScope, inheritScope };
+      } finally {
+        window.__session = original.session;
+        store.data.permissions = original.permissions;
+        store.data.role_permissions = original.rolePermissions;
+        store.data.role_warehouse_scopes = original.roleScopes;
+        store.data.warehouses = original.warehouses;
+        window.OW.wms.settingsTab('general');
+      }
+    });
+    if (!roleScopeUiChecks.selectedScope || !roleScopeUiChecks.allScope || !roleScopeUiChecks.inheritScope) {
+      throw new Error('Institutional role warehouse-scope UI checks failed: ' + JSON.stringify(roleScopeUiChecks));
+    }
+
     // Reconcile the item movement summary using isolated ledger fixtures.
     // Internal transfer movements must not be counted as consumption or supplier receipts.
     const transferReportChecks = await page.evaluate(async () => {
