@@ -64,9 +64,14 @@ self.addEventListener('install', event => {
       // cache.add()/addAll() may reuse a stale HTTP-cache response. Force a
       // network reload so a new service worker never pins an old module set.
       await Promise.all(APP_SHELL.map(async url => {
-        const response = await fetch(url, { cache: 'reload', credentials: 'same-origin' });
-        if (!response.ok) throw new Error(`Shell asset failed: ${url}`);
-        await cache.put(url, response);
+        try {
+          const response = await fetch(url, { cache: 'reload', credentials: 'same-origin' });
+          if (!response.ok) throw new Error(`Shell asset failed: ${url}`);
+          await cache.put(url, response);
+        } catch (error) {
+          // Vendor assets are bundled in desktop builds; the hosted PWA may use its CDN fallback.
+          if (!url.startsWith('./vendor/')) throw error;
+        }
       }));
     }).then(() => self.skipWaiting())
   );
