@@ -114,7 +114,7 @@ jobs:
       - name: Upload OW installer
         uses: actions/upload-artifact@v4
         with:
-          name: OW-${{ matrix.channel }}-${{ matrix.arch }}-Setup
+          name: OW-${{ matrix.channel }}-${{ matrix.arch }}-Setup-${{ github.run_id }}
           path: dist/*.exe
           if-no-files-found: error
           retention-days: 30
@@ -139,7 +139,8 @@ jobs:
               per_page: 100
             });
             for (const artifact of artifacts) {
-              if (names.has(artifact.name) && Number(artifact.workflow_run?.id) < Number(context.runId)) {
+              if ([...names].some(name => artifact.name === name || artifact.name.startsWith(name + '-'))
+                  && Number(artifact.workflow_run?.id) < Number(context.runId)) {
                 await github.rest.actions.deleteArtifact({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
