@@ -1,0 +1,13 @@
+﻿warehouse_code,code,name,is_active
+WH-1,A,الرئيسي,TRUE
+WH-1,B,الكهرباء,TRUE
+WH-1,C,الساحة,TRUE
+WH-1,D,الفرعي,TRUE
+WH-2,E,زيوت + اخري,TRUE
+WH-2,F,هينو,TRUE
+WH-2,G,هايلوكس,TRUE
+WH-2,H,كات,TRUE
+WH-2,I,kt5,TRUE
+WH-3,J,مواد البناء ,TRUE
+WH-4,K,المواد الخام,TRUE
+WH-5,L,مواد التفجير ,TRUE
