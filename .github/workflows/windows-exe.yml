@@ -97,6 +97,11 @@ jobs:
       - name: Prepare offline vendor assets and OW icon
         run: npm run prepare:desktop
 
+      - name: Set unique installer filename for this compatibility target
+        shell: pwsh
+        run: |
+          node -e 'const fs = require("fs"); const p = require("./package.json"); p.build.artifactName = "OW-${version}-${{ matrix.channel }}-${arch}-Setup.${ext}"; fs.writeFileSync("package.json", JSON.stringify(p, null, 2));'
+
       - name: Build OW installer
         shell: pwsh
         run: |
