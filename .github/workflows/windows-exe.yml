@@ -1,0 +1,80 @@
+name: OW Windows EXE
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - build/ow-electron-windows-x86-x64
+    paths:
+      - 'electron/**'
+      - 'scripts/**'
+      - 'assets/logo.png'
+      - 'index.html'
+      - 'SQLite-db.js'
+      - 'sw.js'
+      - 'package.json'
+      - '.github/workflows/windows-exe.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.channel }} / ${{ matrix.arch }}
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - channel: Legacy-Windows7
+            electron: 22.3.27
+            arch: ia32
+          - channel: Legacy-Windows7
+            electron: 22.3.27
+            arch: x64
+          - channel: Current-Windows10-11
+            electron: 43.0.0
+            arch: ia32
+          - channel: Current-Windows10-11
+            electron: 43.0.0
+            arch: x64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install pinned desktop build tools
+        shell: pwsh
+        run: |
+          npm install --no-save --no-audit --no-fund electron@${{ matrix.electron }} electron-builder@26.0.12 png-to-ico@2.1.8
+
+      - name: Prepare offline vendor assets and OW icon
+        run: npm run prepare:desktop
+
+      - name: Build OW installer
+        shell: pwsh
+        run: |
+          npx electron-builder --win nsis --${{ matrix.arch }} --publish never
+
+      - name: Verify installer output
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem -Path dist -Filter '*.exe' -File
+          if ($files.Count -ne 1) { throw "Expected exactly one OW installer, found $($files.Count)" }
+          if ($files[0].Name -notlike 'OW-*Setup.exe') { throw "Unexpected installer name: $($files[0].Name)" }
+          if ($files[0].Length -lt 20MB) { throw "Installer is unexpectedly small: $($files[0].Length) bytes" }
+          Get-FileHash $files[0].FullName -Algorithm SHA256 | Format-List
+
+      - name: Upload OW installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: OW-${{ matrix.channel }}-${{ matrix.arch }}-Setup
+          path: dist/*.exe
+          if-no-files-found: error
+          retention-days: 30
