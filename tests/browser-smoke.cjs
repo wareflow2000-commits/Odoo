@@ -117,7 +117,8 @@ const fs = require('fs');
       const destinationWarehouse = '99999999-9999-4999-8999-999999999999';
       const sourceShelf = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
       const destinationShelf = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
-      const at = (hour, minute = 0) => new Date(Date.UTC(2026, 9, 20, hour, minute)).toISOString();
+      const { todayISO } = await import('/core-utils.js');
+      const at = (hour, minute = 0) => new Date(`${todayISO()}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00`).toISOString();
       try {
         store.data.items = [{ id: itemId, code: 'SKU-REPORT-TRANSFER', name_en: 'Transfer test item', base_unit: 'PCS' }];
         store.data.warehouses = [
