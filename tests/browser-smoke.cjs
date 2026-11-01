@@ -132,6 +132,8 @@ const fs = require('fs');
         window.OW.wms.authorizationGrantModal();
         const form = document.querySelector('#authorizationGrantForm');
         if (!form) throw new Error('Authorization grant form did not open');
+        // modal() binds the form controls in its deferred onMount callback.
+        await new Promise(resolve => setTimeout(resolve, 0));
         const subject = form.querySelector('#authSubjectType');
         const scope = form.querySelector('#authScopeType');
         const allScope = scope.querySelector('option[value="ALL"]');
