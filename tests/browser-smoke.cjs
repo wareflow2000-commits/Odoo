@@ -51,6 +51,130 @@ const fs = require('fs');
       throw new Error('Settings tab render checks failed: ' + JSON.stringify(settingsTabChecks));
     }
 
+    // Render the institutional role scope controls with isolated in-memory data.
+    // This verifies that the UI reads the saved role scope and offers all three
+    // supported modes without performing any database writes.
+    const roleScopeUiChecks = await page.evaluate(async () => {
+      const { store } = await import('/core-store.js');
+      const original = {
+        session: window.__session,
+        permissions: store.data.permissions,
+        rolePermissions: store.data.role_permissions,
+        roleScopes: store.data.role_warehouse_scopes,
+        warehouses: store.data.warehouses
+      };
+      const warehouseId = '12121212-1212-4212-8212-121212121212';
+      try {
+        window.__session = {
+          id: 'role-scope-ui-superadmin',
+          role: 'SUPER_ADMIN',
+          profile: { id: 'role-scope-ui-superadmin', role: 'SUPER_ADMIN' }
+        };
+        store.data.permissions = [{ key: 'page:inventory:access', description: 'Inventory page' }];
+        store.data.role_permissions = [{ role_name: 'CLERK', permission_key: 'page:inventory:access' }];
+        store.data.role_warehouse_scopes = [{
+          role_name: 'CLERK', scope_mode: 'SELECTED', warehouse_ids: [warehouseId]
+        }];
+        store.data.warehouses = [{ id: warehouseId, code: 'TEST-01', name: 'Scope UI test warehouse' }];
+        window.OW.wms.settingsTab('roles');
+        const html = window.OW.pages.settings.render();
+        const selectedScope = html.includes('id="roleScopeMode"')
+          && html.includes('value="SELECTED" selected')
+          && html.includes('data-role-warehouse="' + warehouseId + '" checked')
+          && html.includes('roleScopeWarehouses');
+        store.data.role_warehouse_scopes = [{ role_name: 'CLERK', scope_mode: 'ALL', warehouse_ids: [] }];
+        const allHtml = window.OW.pages.settings.render();
+        const allScope = allHtml.includes('value="ALL" selected');
+        store.data.role_warehouse_scopes = [{ role_name: 'CLERK', scope_mode: 'INHERIT', warehouse_ids: [] }];
+        const inheritHtml = window.OW.pages.settings.render();
+        const inheritScope = inheritHtml.includes('value="INHERIT" selected');
+        return { selectedScope, allScope, inheritScope };
+      } finally {
+        window.__session = original.session;
+        store.data.permissions = original.permissions;
+        store.data.role_permissions = original.rolePermissions;
+        store.data.role_warehouse_scopes = original.roleScopes;
+        store.data.warehouses = original.warehouses;
+        window.OW.wms.settingsTab('general');
+      }
+    });
+    if (!roleScopeUiChecks.selectedScope || !roleScopeUiChecks.allScope || !roleScopeUiChecks.inheritScope) {
+      throw new Error('Institutional role warehouse-scope UI checks failed: ' + JSON.stringify(roleScopeUiChecks));
+    }
+
+    // Exercise grant-form constraints and subject/scope transitions without saving.
+    const authorizationGrantUiChecks = await page.evaluate(async () => {
+      const { store } = await import('/core-store.js');
+      const original = {
+        session: window.__session,
+        profiles: store.data.profiles,
+        permissions: store.data.permissions,
+        warehouses: store.data.warehouses
+      };
+      const adminId = '12121212-1212-4212-8212-121212121212';
+      try {
+        window.__session = {
+          id: adminId, role: 'SUPER_ADMIN',
+          profile: { id: adminId, role: 'SUPER_ADMIN' }
+        };
+        store.data.profiles = [{
+          id: '13131313-1313-4313-8313-131313131313',
+          role: 'CLERK', status: 'ACTIVE', name: 'Grant UI fixture'
+        }];
+        store.data.permissions = [
+          { key: 'action:transaction:issue:create', description: 'Create issue' },
+          { key: 'page:inventory:access', description: 'Inventory page' }
+        ];
+        store.data.warehouses = [{
+          id: '14141414-1414-4414-8414-141414141414',
+          code: 'AUTH-UI', name: 'Authorization UI fixture'
+        }];
+        window.OW.wms.authorizationGrantModal();
+        const form = document.querySelector('#authorizationGrantForm');
+        if (!form) throw new Error('Authorization grant form did not open');
+        // modal() binds the form controls in its deferred onMount callback.
+        await new Promise(resolve => setTimeout(resolve, 0));
+        const subject = form.querySelector('#authSubjectType');
+        const scope = form.querySelector('#authScopeType');
+        const allScope = scope.querySelector('option[value="ALL"]');
+        const expiry = form.querySelector('[name="valid_until"]');
+        const resourceType = form.querySelector('[name="resource_type"]');
+        const warehouse = form.querySelector('[name="warehouse_id"]');
+        const conditions = form.querySelector('[name="conditions"]');
+
+        const userGrantRules = subject.value === 'USER' && allScope.disabled
+          && expiry.required && resourceType.required && resourceType.readOnly
+          && warehouse.required && resourceType.value === 'transaction';
+
+        subject.value = 'ROLE';
+        subject.dispatchEvent(new Event('change', { bubbles: true }));
+        const roleGrantRules = !allScope.disabled && !expiry.required
+          && !resourceType.readOnly && !warehouse.required;
+
+        scope.value = 'CONTEXT';
+        scope.dispatchEvent(new Event('change', { bubbles: true }));
+        const contextRules = conditions.required
+          && form.querySelector('#authConditionsWrap')?.style.display !== 'none';
+
+        subject.value = 'USER';
+        subject.dispatchEvent(new Event('change', { bubbles: true }));
+        const userContextRules = allScope.disabled && expiry.required
+          && warehouse.required && conditions.required;
+
+        document.querySelector('#authGrantCancel')?.click();
+        return { userGrantRules, roleGrantRules, contextRules, userContextRules };
+      } finally {
+        document.querySelector('#authGrantCancel')?.click();
+        window.__session = original.session;
+        store.data.profiles = original.profiles;
+        store.data.permissions = original.permissions;
+        store.data.warehouses = original.warehouses;
+      }
+    });
+    if (Object.values(authorizationGrantUiChecks).some(value => value !== true)) {
+      throw new Error('Authorization grant UI checks failed: ' + JSON.stringify(authorizationGrantUiChecks));
+    }
+
     // Reconcile the item movement summary using isolated ledger fixtures.
     // Internal transfer movements must not be counted as consumption or supplier receipts.
     const transferReportChecks = await page.evaluate(async () => {
@@ -66,7 +190,8 @@ const fs = require('fs');
       const destinationWarehouse = '99999999-9999-4999-8999-999999999999';
       const sourceShelf = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
       const destinationShelf = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
-      const at = (hour, minute = 0) => new Date(Date.UTC(2026, 9, 20, hour, minute)).toISOString();
+      const { todayISO } = await import('/core-utils.js');
+      const at = (hour, minute = 0) => new Date(`${todayISO()}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00`).toISOString();
       try {
         store.data.items = [{ id: itemId, code: 'SKU-REPORT-TRANSFER', name_en: 'Transfer test item', base_unit: 'PCS' }];
         store.data.warehouses = [
@@ -225,6 +350,13 @@ const fs = require('fs');
         && store.data.items[0].id === itemId;
       const issueAllowed = offlineTransactionTypeAllowed('ISSUE');
       const receiptDenied = !offlineTransactionTypeAllowed('RECEIPT');
+      // Stocktake counts have a separate queue; no other voucher type may
+      // enter the transaction outbox while offline.
+      const nonIssueTransactionsDenied = [
+        'RECEIPT', 'GRN', 'SUPPLY', 'TRANSFER', 'STOCK_TRANSFER',
+        'RETURN', 'RETURN_TO_SUPPLIER', 'RETURN_FROM_CUSTOMER',
+        'ADJUSTMENT_IN', 'ADJUSTMENT_OUT', 'OPENING_BALANCE', 'STOCKTAKE'
+      ].every(type => !offlineTransactionTypeAllowed(type));
       const assignedWarehouseAllowed = offlineWarehouseAllowed(warehouseId);
       const otherWarehouseDenied = !offlineWarehouseAllowed('66666666-6666-4666-8666-666666666666');
       window.__session.profile.assigned_warehouse_ids = [warehouseId, '66666666-6666-4666-8666-666666666666'];
@@ -348,7 +480,7 @@ const fs = require('fs');
       queueSnapshot();
 
       return {
-        issueAllowed, receiptDenied, assignedWarehouseAllowed, otherWarehouseDenied,
+        issueAllowed, receiptDenied, nonIssueTransactionsDenied, assignedWarehouseAllowed, otherWarehouseDenied,
         multiWarehouseDenied, blockedMasterWrites: blockedMasterWrites.every(Boolean),
         legacyMasterQuarantined, legacyQueueBlocksFurtherOfflineWork, noOptimisticMasterWrite,
         countQueued: !!saved.pending_sync && queued,

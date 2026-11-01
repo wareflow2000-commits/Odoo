@@ -47,7 +47,9 @@ const F = {
   authorizationDecisions: [],
   authorizationLoaded: false,
   authorizationLoading: false,
-  authorizationError: ''
+  authorizationError: '',
+  authorizationGrantFilter: { subject: 'ALL', effect: 'ALL', status: 'ALL', search: '' },
+  authorizationDecisionFilter: { decision: 'ALL', breakGlass: 'ALL', search: '' }
 };
 
 const LIVE_BACKUP_META = 'orshap_live_backup_meta_v1';
@@ -358,6 +360,14 @@ function renderRoles(banned) {
     return hay.includes(F.permSearch.toLowerCase());
   });
   const active = new Set(roleKeys(F.role));
+  const roleScope = store.get('role_warehouse_scopes').find(row =>
+    String(row.role_name || '').toUpperCase() === F.role
+  ) || null;
+  const scopeMode = String(roleScope?.scope_mode || 'INHERIT').toUpperCase();
+  const selectedWarehouseIds = new Set(Array.isArray(roleScope?.warehouse_ids) ? roleScope.warehouse_ids : []);
+  const warehouses = [...store.get('warehouses')].sort((a, b) =>
+    String(a.code || '').localeCompare(String(b.code || ''))
+  );
   const groups = new Map();
   for (const p of perms) {
     const g = p.key.includes(':') ? p.key.split(':')[0] : 'other';
@@ -365,6 +375,30 @@ function renderRoles(banned) {
     groups.get(g).push(p);
   }
   return `
+    ${card(`<i class="fa-solid fa-warehouse"></i> ${tx('نطاق المستودعات للدور', 'Role warehouse scope')}`,
+      `<p class="o_hint">${tx(
+        'يحدد هذا النطاق الحد الأعلى لمستودعات الدور. إذا كانت للمستخدم مستودعات معيّنة، يُطبّق التقاطع بينها وبين نطاق الدور؛ وإذا لم تكن له تعيينات فردية، يصبح نطاق الدور المحدد هو نطاقه الفعلي.',
+        'This is the role-level warehouse ceiling. If a user has explicit warehouse assignments, access is their intersection with this role scope; if not, the role scope supplies the effective warehouse set.'
+      )}</p>
+      <div class="o_field">
+        <label for="roleScopeMode">${tx('طريقة تحديد النطاق', 'Scope mode')}</label>
+        <select id="roleScopeMode" class="o_filter_select" ${canWrite ? '' : 'disabled'}>
+          <option value="INHERIT" ${scopeMode === 'INHERIT' ? 'selected' : ''}>${tx('يرث نطاق المستخدم', 'Inherit user scope')}</option>
+          <option value="SELECTED" ${scopeMode === 'SELECTED' ? 'selected' : ''}>${tx('مستودعات محددة', 'Selected warehouses')}</option>
+          <option value="ALL" ${scopeMode === 'ALL' ? 'selected' : ''}>${tx('كل المستودعات', 'All warehouses')}</option>
+        </select>
+      </div>
+      <div class="o_check_grid" id="roleScopeWarehouses" style="margin-top:10px">
+        ${warehouses.map(w => `<label class="o_checkbox">
+          <input type="checkbox" data-role-warehouse="${esc(w.id)}" ${selectedWarehouseIds.has(w.id) ? 'checked' : ''}
+            ${canWrite && scopeMode === 'SELECTED' ? '' : 'disabled'}>
+          ${esc(w.code || '')} — ${esc(w.name || '')}
+        </label>`).join('') || `<span class="o_muted">${tx('لا توجد مستودعات معرفة.', 'No warehouses are defined.')}</span>`}
+      </div>
+      <small class="o_hint">${tx(
+        'تنبيه: «كل المستودعات» لا يتجاوز تعيين المستودعات الفردي إن كان موجوداً. لا تستخدمه إلا عندما يكون نطاق الدور العام مقصوداً.',
+        'Warning: “All warehouses” does not override an individual user assignment when one exists. Use it only when broad role scope is intentional.'
+      )}</small>`, '', 'flush-body')}
     <div class="o_perm_bar">
       <select class="o_filter_select" id="permRole">
         ${ROLES.filter(r => r !== 'SUPER_ADMIN').map(r => `<option value="${r}" ${F.role === r ? 'selected' : ''}>${roleLabel(r)}</option>`).join('')}
@@ -414,10 +448,62 @@ function renderAuthorization(banned) {
     const p = store.byId('profiles', id);
     return p?.name || p?.email || String(id).slice(0, 8);
   };
+  const filter = F.authorizationGrantFilter;
+  const now = Date.now();
+  const grantStatus = g => {
+    if (g.revoked_at) return 'REVOKED';
+    if (new Date(g.valid_from).getTime() > now) return 'SCHEDULED';
+    if (g.valid_until && new Date(g.valid_until).getTime() <= now) return 'EXPIRED';
+    return 'ACTIVE';
+  };
+  const grantRows = grants.filter(g => {
+    const status = grantStatus(g);
+    const searchText = [
+      g.permission_key, g.resource_type, g.resource_id, g.role_name,
+      actorName(g.user_id), warehouseName(g.warehouse_id), g.grant_reason
+    ].join(' ').toLowerCase();
+    return (filter.subject === 'ALL' || g.subject_type === filter.subject)
+      && (filter.effect === 'ALL' || g.effect === filter.effect)
+      && (filter.status === 'ALL' || status === filter.status)
+      && (!filter.search || searchText.includes(filter.search.trim().toLowerCase()));
+  });
+  const decisionFilter = F.authorizationDecisionFilter;
+  const decisionRows = decisions.filter(d => {
+    const searchText = [
+      d.action_key, d.resource_type, d.resource_id, d.decision_reason,
+      actorName(d.actor_user_id), warehouseName(d.warehouse_id), d.matched_grant_id
+    ].join(' ').toLowerCase();
+    return (decisionFilter.decision === 'ALL' || d.decision === decisionFilter.decision)
+      && (decisionFilter.breakGlass === 'ALL'
+        || (decisionFilter.breakGlass === 'YES') === !!d.break_glass)
+      && (!decisionFilter.search || searchText.includes(decisionFilter.search.trim().toLowerCase()));
+  });
   return `
     <div class="o_stack">
       ${card(`<i class="fa-solid fa-shield-halved"></i> ${tx('منح التفويض', 'Authorization grants')}`,
-        `<p class="o_hint">${tx('تتحكم المنحة في الإجراء والمورد والسجل والمستودع ونطاق الملكية أو شروط السياق ومدة الصلاحية. المنع الصريح يتغلب على السماح.', 'Each grant can constrain action, resource, record, warehouse, ownership/context conditions and validity. Explicit deny always overrides allow.')}</p>
+        `<p class="o_hint">${tx('تتحكم المنحة في الإجراء والمورد والسجل والمستودع ونطاق الملكية أو شروط السياق ومدة الصلاحية. المنع الصريح يتغلب على السماح. المنح سجل تدقيقي غير قابل للتحرير؛ لتغييرها ألغِ المنحة القديمة بسبب موثق وأنشئ منحة جديدة.', 'Each grant can constrain action, resource, record, warehouse, ownership/context conditions and validity. Explicit deny always overrides allow. Grants are audit records, not editable in place; revoke with a documented reason and create a replacement.')}</p>
+        <div class="o_filter_bar" style="margin:10px 0">
+          <input id="authGrantSearch" class="o_filter_input" value="${esc(filter.search)}"
+            placeholder="${tx('بحث في المستفيد أو الإجراء أو المورد…', 'Search subject, action or resource…')}">
+          <select id="authGrantSubject" class="o_filter_select">
+            <option value="ALL" ${filter.subject === 'ALL' ? 'selected' : ''}>${tx('كل المستفيدين', 'All subjects')}</option>
+            <option value="USER" ${filter.subject === 'USER' ? 'selected' : ''}>${tx('المستخدمون', 'Users')}</option>
+            <option value="ROLE" ${filter.subject === 'ROLE' ? 'selected' : ''}>${tx('الأدوار', 'Roles')}</option>
+          </select>
+          <select id="authGrantEffect" class="o_filter_select">
+            <option value="ALL" ${filter.effect === 'ALL' ? 'selected' : ''}>${tx('كل الآثار', 'All effects')}</option>
+            <option value="ALLOW" ${filter.effect === 'ALLOW' ? 'selected' : ''}>${tx('سماح', 'Allow')}</option>
+            <option value="DENY" ${filter.effect === 'DENY' ? 'selected' : ''}>${tx('منع', 'Deny')}</option>
+          </select>
+          <select id="authGrantStatus" class="o_filter_select">
+            <option value="ALL" ${filter.status === 'ALL' ? 'selected' : ''}>${tx('كل الحالات', 'All statuses')}</option>
+            <option value="ACTIVE" ${filter.status === 'ACTIVE' ? 'selected' : ''}>${tx('فعالة', 'Active')}</option>
+            <option value="SCHEDULED" ${filter.status === 'SCHEDULED' ? 'selected' : ''}>${tx('مجدولة', 'Scheduled')}</option>
+            <option value="EXPIRED" ${filter.status === 'EXPIRED' ? 'selected' : ''}>${tx('منتهية', 'Expired')}</option>
+            <option value="REVOKED" ${filter.status === 'REVOKED' ? 'selected' : ''}>${tx('ملغاة', 'Revoked')}</option>
+          </select>
+          <span class="o_hint">${fmtNum(grantRows.length)} / ${fmtNum(grants.length)}</span>
+        </div>
         ${table(
           [
             { label: tx('المستفيد', 'Subject') },
@@ -426,11 +512,14 @@ function renderAuthorization(banned) {
             { label: tx('المستودع', 'Warehouse') },
             { label: tx('الأثر', 'Effect') },
             { label: tx('النطاق', 'Scope') },
-            { label: tx('الصلاحية حتى', 'Valid until') },
+            { label: tx('يبدأ في', 'Valid from') },
+            { label: tx('ينتهي في', 'Valid until') },
+            { label: tx('سبب المنح', 'Grant reason') },
+            { label: tx('منحها', 'Granted by') },
             { label: tx('الحالة', 'Status') },
             { label: '', width: '76px' }
           ],
-          grants.map(g => ({
+          grantRows.map(g => ({
             cells: [
               g.subject_type === 'ROLE' ? roleLabel(g.role_name) : actorName(g.user_id),
               `<span class="o_cell_main">${esc(permissionLabel(g.permission_key))}</span><div class="o_cell_sub">${esc(g.permission_key)}</div>`,
@@ -438,16 +527,38 @@ function renderAuthorization(banned) {
               esc(warehouseName(g.warehouse_id)),
               badge(g.effect, g.effect === 'DENY' ? 'red' : 'green'),
               `${esc(g.scope_type)}${g.scope_type === 'CONTEXT' ? `<div class="o_cell_sub">${esc(JSON.stringify(g.conditions || {}))}</div>` : ''}`,
+              g.valid_from ? fmtDateTime(g.valid_from) : '—',
               g.valid_until ? fmtDateTime(g.valid_until) : '—',
-              g.revoked_at ? badge(tx('ملغاة', 'Revoked'), 'red') : (new Date(g.valid_from) > new Date() ? badge(tx('مجدولة', 'Scheduled'), 'blue') : badge(tx('فعالة', 'Active'), 'green')),
-              !canWrite || g.revoked_at ? '' : `<button class="o_btn o_btn_ghost o_btn_sm" data-auth-revoke="${g.id}" title="${tx('إلغاء المنحة', 'Revoke grant')}" aria-label="${tx('إلغاء المنحة', 'Revoke grant')}"><i class="fa-solid fa-ban"></i></button>`
+              esc(g.grant_reason || '—'),
+              esc(actorName(g.granted_by)),
+              grantStatus(g) === 'REVOKED'
+                ? `${badge(tx('ملغاة', 'Revoked'), 'red')}${g.revocation_reason ? `<div class="o_cell_sub">${esc(g.revocation_reason)}</div>` : ''}`
+                : grantStatus(g) === 'EXPIRED' ? badge(tx('منتهية', 'Expired'), 'gray')
+                : grantStatus(g) === 'SCHEDULED' ? badge(tx('مجدولة', 'Scheduled'), 'blue')
+                : badge(tx('فعالة', 'Active'), 'green'),
+              !canWrite || grantStatus(g) === 'REVOKED' || grantStatus(g) === 'EXPIRED' ? '' : `<button class="o_btn o_btn_ghost o_btn_sm" data-auth-revoke="${g.id}" title="${tx('إلغاء المنحة', 'Revoke grant')}" aria-label="${tx('إلغاء المنحة', 'Revoke grant')}"><i class="fa-solid fa-ban"></i></button>`
             ]
           })),
           { emptyTitle: tx('لا توجد منح تفويض', 'No authorization grants') }
         )}`,
         `<button class="o_btn o_btn_primary o_btn_sm" id="authGrantAdd" ${canWrite ? '' : 'disabled'}><i class="fa-solid fa-plus"></i> ${tx('منحة جديدة', 'New grant')}</button>`, 'flush-body')}
       ${card(`<i class="fa-solid fa-clipboard-list"></i> ${tx('سجل قرارات التفويض — آخر 30 يوماً', 'Authorization decisions — last 30 days')}`,
-        table(
+        `<div class="o_filter_bar" style="margin:10px 0">
+          <input id="authDecisionSearch" class="o_filter_input" value="${esc(decisionFilter.search)}"
+            placeholder="${tx('بحث في المستخدم أو الإجراء أو السبب…', 'Search actor, action or reason…')}">
+          <select id="authDecisionResult" class="o_filter_select">
+            <option value="ALL" ${decisionFilter.decision === 'ALL' ? 'selected' : ''}>${tx('كل القرارات', 'All decisions')}</option>
+            <option value="ALLOW" ${decisionFilter.decision === 'ALLOW' ? 'selected' : ''}>ALLOW</option>
+            <option value="DENY" ${decisionFilter.decision === 'DENY' ? 'selected' : ''}>DENY</option>
+          </select>
+          <select id="authDecisionBreakGlass" class="o_filter_select">
+            <option value="ALL" ${decisionFilter.breakGlass === 'ALL' ? 'selected' : ''}>${tx('كل أنواع التنفيذ', 'All execution types')}</option>
+            <option value="YES" ${decisionFilter.breakGlass === 'YES' ? 'selected' : ''}>${tx('تجاوز طارئ', 'Break-glass')}</option>
+            <option value="NO" ${decisionFilter.breakGlass === 'NO' ? 'selected' : ''}>${tx('عادي', 'Regular')}</option>
+          </select>
+          <span class="o_hint">${fmtNum(decisionRows.length)} / ${fmtNum(decisions.length)}</span>
+        </div>
+        ${table(
           [
             { label: tx('التاريخ', 'Date') },
             { label: tx('المستخدم', 'Actor') },
@@ -455,9 +566,11 @@ function renderAuthorization(banned) {
             { label: tx('المورد / السجل', 'Resource / record') },
             { label: tx('المستودع', 'Warehouse') },
             { label: tx('القرار', 'Decision') },
-            { label: tx('السبب', 'Reason') }
+            { label: tx('السبب', 'Reason') },
+            { label: tx('المنحة المطابقة', 'Matched grant') },
+            { label: tx('سياق القرار', 'Decision context') }
           ],
-          decisions.map(d => ({
+          decisionRows.map(d => ({
             cells: [
               fmtDateTime(d.created_at),
               esc(actorName(d.actor_user_id)),
@@ -465,11 +578,15 @@ function renderAuthorization(banned) {
               `${esc(d.resource_type || '—')}${d.resource_id ? `<div class="o_cell_sub">${esc(d.resource_id)}</div>` : ''}`,
               esc(warehouseName(d.warehouse_id)),
               badge(d.decision, d.decision === 'DENY' ? 'red' : 'green'),
-              esc(d.decision_reason || '—')
+              esc(d.decision_reason || '—'),
+              d.matched_grant_id ? `<span class="o_cell_sub">${esc(d.matched_grant_id)}</span>` : '—',
+              d.context && Object.keys(d.context).length
+                ? `<details><summary>${tx('عرض السياق', 'View context')}</summary><pre class="o_code_block">${esc(JSON.stringify(d.context, null, 2))}</pre></details>`
+                : '—'
             ]
           })),
           { emptyTitle: tx('لا توجد قرارات مسجلة في الفترة المحددة', 'No decisions recorded in this period') }
-        ), '', 'flush-body')}
+        )}`, '', 'flush-body')}
     </div>`;
 }
 
@@ -1418,6 +1535,12 @@ function bind(_, main) {
       t = setTimeout(() => { F.permSearch = permSearch.value; reload(); }, 300);
     });
   }
+  const roleScopeMode = main.querySelector('#roleScopeMode');
+  if (roleScopeMode) roleScopeMode.onchange = () => {
+    const enabled = roleScopeMode.value === 'SELECTED' && canAdministerProfiles()
+      && navigator.onLine && !window.__session?.offline;
+    main.querySelectorAll('[data-role-warehouse]').forEach(c => { c.disabled = !enabled; });
+  };
   const all = main.querySelector('#permAll');
   if (all) all.onclick = () => main.querySelectorAll('[data-perm]').forEach(c => { if (!c.disabled) c.checked = true; });
   const none = main.querySelector('#permNone');
@@ -1433,15 +1556,23 @@ function bind(_, main) {
       return;
     }
     const keys = [...main.querySelectorAll('[data-perm]')].filter(c => c.checked).map(c => c.dataset.perm);
+    const scopeMode = String(main.querySelector('#roleScopeMode')?.value || 'INHERIT').toUpperCase();
+    const warehouseIds = [...main.querySelectorAll('[data-role-warehouse]:checked')].map(c => c.dataset.roleWarehouse);
+    if (scopeMode === 'SELECTED' && warehouseIds.length === 0) {
+      toast(tx('اختر مستودعاً واحداً على الأقل لهذا النطاق.', 'Select at least one warehouse for SELECTED scope.'), 'warning');
+      return;
+    }
     if (!await confirmDialog({
-      title: tx('حفظ صلاحيات الدور', 'Save role permissions'),
-      message: tx(`سيتم استبدال جميع صلاحيات الدور "${roleLabel(F.role)}" بـ ${keys.length} صلاحية.`,
-        `All permissions for "${roleLabel(F.role)}" will be replaced with ${keys.length} entries.`),
+      title: tx('حفظ إعدادات الدور', 'Save role access configuration'),
+      message: tx(
+        `سيتم استبدال صلاحيات الدور "${roleLabel(F.role)}" (${keys.length}) وحفظ نطاق المستودعات (${scopeMode === 'SELECTED' ? warehouseIds.length : scopeMode}).`,
+        `This replaces "${roleLabel(F.role)}" permissions (${keys.length}) and saves warehouse scope (${scopeMode === 'SELECTED' ? warehouseIds.length : scopeMode}).`
+      ),
       confirmText: tx('حفظ', 'Save'), tone: 'primary'
     })) return;
     save.disabled = true;
     try {
-      await replaceRolePermissions(F.role, keys);
+      await replaceRolePermissions(F.role, keys, scopeMode, warehouseIds);
       toast(tx('تم تحديث صلاحيات الدور', 'Role permissions updated'), 'success');
       reload();
     } catch (e) { toast(String(e.message || e), 'error'); }
@@ -1494,6 +1625,39 @@ function bind(_, main) {
 
   const authReload = main.querySelector('#authReload');
   if (authReload) authReload.onclick = () => { F.authorizationLoaded = false; F.authorizationError = ''; reload(); };
+  const updateGrantFilter = () => {
+    const search = main.querySelector('#authGrantSearch');
+    const subject = main.querySelector('#authGrantSubject');
+    const effect = main.querySelector('#authGrantEffect');
+    const status = main.querySelector('#authGrantStatus');
+    F.authorizationGrantFilter = {
+      search: search?.value || '',
+      subject: subject?.value || 'ALL',
+      effect: effect?.value || 'ALL',
+      status: status?.value || 'ALL'
+    };
+    reload();
+  };
+  const authGrantSearch = main.querySelector('#authGrantSearch');
+  if (authGrantSearch) authGrantSearch.onchange = updateGrantFilter;
+  ['authGrantSubject', 'authGrantEffect', 'authGrantStatus'].forEach(id => {
+    const control = main.querySelector('#' + id);
+    if (control) control.onchange = updateGrantFilter;
+  });
+  const updateDecisionFilter = () => {
+    F.authorizationDecisionFilter = {
+      search: main.querySelector('#authDecisionSearch')?.value || '',
+      decision: main.querySelector('#authDecisionResult')?.value || 'ALL',
+      breakGlass: main.querySelector('#authDecisionBreakGlass')?.value || 'ALL'
+    };
+    reload();
+  };
+  const authDecisionSearch = main.querySelector('#authDecisionSearch');
+  if (authDecisionSearch) authDecisionSearch.onchange = updateDecisionFilter;
+  ['authDecisionResult', 'authDecisionBreakGlass'].forEach(id => {
+    const control = main.querySelector('#' + id);
+    if (control) control.onchange = updateDecisionFilter;
+  });
   const authGrantAdd = main.querySelector('#authGrantAdd');
   if (authGrantAdd) authGrantAdd.onclick = authorizationGrantModal;
   main.querySelectorAll('[data-auth-revoke]').forEach(button => {
@@ -1553,10 +1717,13 @@ function authorizationGrantModal() {
       <select name="scope_type" id="authScopeType">
         <option value="WAREHOUSE" selected>WAREHOUSE</option><option value="OWN">OWN</option><option value="CONTEXT">CONTEXT</option><option value="ALL">ALL</option>
       </select></div>
-    <div class="o_field full"><label>${tx('شروط السياق JSON (لنطاق CONTEXT)', 'Context conditions JSON (for CONTEXT scope)')}</label>
-      <textarea name="conditions" rows="3" placeholder='{"status":"PENDING_APPROVAL"}'></textarea></div>
-    <div class="o_field"><label>${tx('تاريخ الانتهاء (إلزامي لمنح المستخدم)', 'Expiry date (required for user grants)')}</label><input type="datetime-local" name="valid_until"></div>
+    <div class="o_field full" id="authConditionsWrap"><label>${tx('شروط السياق JSON (إلزامية لنطاق CONTEXT)', 'Context conditions JSON (required for CONTEXT scope)')}</label>
+      <textarea name="conditions" rows="3" placeholder='{"status":"PENDING_APPROVAL"}'></textarea>
+      <small class="o_hint">${tx('تُطابق الشروط سياق العملية المرسل إلى محرك التفويض؛ استخدم أسماء حقول معروفة في سياق الإجراء.', 'Conditions are matched against the context passed to the authorization engine; use fields actually supplied by the action context.')}</small></div>
+    <div class="o_field"><label>${tx('يبدأ التفويض في', 'Grant starts at')}</label><input type="datetime-local" name="valid_from"></div>
+    <div class="o_field"><label>${tx('ينتهي التفويض في (إلزامي لمنح المستخدم)', 'Grant expires at (required for user grants)')}</label><input type="datetime-local" name="valid_until"></div>
     <div class="o_field full"><label>${tx('سبب منح التفويض', 'Grant reason')}</label><textarea name="reason" required rows="2"></textarea></div>
+    <div class="o_field full"><div class="o_alert o_alert_info">${tx('المنع الصريح له الأولوية على السماح. نطاق الدور يظل مقيداً بتعيينات المستودعات الفعلية للمستخدم، ولا تمنح هذه المنحة تجاوزاً تلقائياً لفصل المهام أو الاعتماد الذاتي.', 'An explicit DENY takes precedence over ALLOW. Role scope remains constrained by the user’s actual warehouse assignments; this grant does not automatically bypass segregation of duties or self-approval controls.')}</div></div>
   </form>`;
   modal({
     title: `<i class="fa-solid fa-shield-halved"></i> ${tx('إنشاء منحة تفويض', 'Create authorization grant')}`,
@@ -1603,6 +1770,8 @@ function authorizationGrantModal() {
           : 'Optional for global role grants';
         warehouseSelect.required = isUserGrant || scopeSelect.value === 'WAREHOUSE';
         validUntilInput.required = isUserGrant;
+        form.querySelector('[name="conditions"]').required = scopeSelect.value === 'CONTEXT';
+        form.querySelector('#authConditionsWrap').style.display = scopeSelect.value === 'CONTEXT' ? '' : 'none';
         warehouseSelect.disabled = !isUserGrant && scopeSelect.value === 'ALL';
       };
       subjectType.onchange = syncSubject;
@@ -1625,9 +1794,29 @@ function authorizationGrantModal() {
           return;
         }
         const resourceId = data.resource_id.trim() || null;
+        const validFrom = data.valid_from ? new Date(data.valid_from) : new Date();
+        const validUntil = data.valid_until ? new Date(data.valid_until) : null;
+        if (Number.isNaN(validFrom.getTime()) || (validUntil && Number.isNaN(validUntil.getTime()))
+            || (validUntil && validUntil <= validFrom)) {
+          toast(tx('فترة صلاحية التفويض غير صحيحة؛ يجب أن يكون الانتهاء بعد تاريخ البداية.', 'Invalid grant validity window; expiry must be later than the start.'), 'error');
+          return;
+        }
         if (data.subject_type === 'USER'
-            && (data.scope_type === 'ALL' || !data.warehouse_id || !data.resource_type.trim())) {
-          toast(tx('منحة المستخدم تتطلب نوع مورد ومستودعاً واحداً ونطاق بيانات محدداً وتاريخ انتهاء.', 'A user grant requires a resource type, one warehouse, a bounded data scope and an expiry date.'), 'warning');
+            && (data.scope_type === 'ALL' || !data.warehouse_id || !data.resource_type.trim()
+              || !validUntil || validUntil <= new Date())) {
+          toast(tx('منحة المستخدم تتطلب نوع مورد ومستودعاً واحداً ونطاقاً محدوداً وتاريخ انتهاء مستقبلياً.', 'A user grant requires a resource type, one warehouse, a bounded scope and a future expiry.'), 'warning');
+          return;
+        }
+        if (data.scope_type === 'WAREHOUSE' && !data.warehouse_id) {
+          toast(tx('نطاق المستودع يتطلب اختيار مستودع.', 'WAREHOUSE scope requires a warehouse.'), 'warning');
+          return;
+        }
+        if (data.scope_type === 'CONTEXT' && (!conditions || Object.keys(conditions).length === 0)) {
+          toast(tx('نطاق السياق يتطلب شروط JSON غير فارغة.', 'CONTEXT scope requires non-empty JSON conditions.'), 'warning');
+          return;
+        }
+        if (resourceId && !data.resource_type.trim()) {
+          toast(tx('حدد نوع المورد قبل تحديد معرّف السجل.', 'Choose a resource type before specifying a record ID.'), 'warning');
           return;
         }
         if (resourceId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(resourceId)) {
@@ -1648,8 +1837,8 @@ function authorizationGrantModal() {
             p_warehouse_id: data.warehouse_id || null,
             p_scope_type: data.scope_type,
             p_conditions: conditions,
-            p_valid_from: new Date().toISOString(),
-            p_valid_until: data.valid_until ? new Date(data.valid_until).toISOString() : null,
+            p_valid_from: validFrom.toISOString(),
+            p_valid_until: validUntil ? validUntil.toISOString() : null,
             p_reason: data.reason.trim()
           });
           close();
