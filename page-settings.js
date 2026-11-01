@@ -47,7 +47,8 @@ const F = {
   authorizationDecisions: [],
   authorizationLoaded: false,
   authorizationLoading: false,
-  authorizationError: ''
+  authorizationError: '',
+  authorizationGrantFilter: { subject: 'ALL', effect: 'ALL', status: 'ALL', search: '' }
 };
 
 const LIVE_BACKUP_META = 'orshap_live_backup_meta_v1';
@@ -446,10 +447,45 @@ function renderAuthorization(banned) {
     const p = store.byId('profiles', id);
     return p?.name || p?.email || String(id).slice(0, 8);
   };
+  const filter = F.authorizationGrantFilter;
+  const now = Date.now();
+  const grantRows = grants.filter(g => {
+    const status = g.revoked_at ? 'REVOKED'
+      : new Date(g.valid_from).getTime() > now ? 'SCHEDULED' : 'ACTIVE';
+    const searchText = [
+      g.permission_key, g.resource_type, g.resource_id, g.role_name,
+      actorName(g.user_id), warehouseName(g.warehouse_id), g.grant_reason
+    ].join(' ').toLowerCase();
+    return (filter.subject === 'ALL' || g.subject_type === filter.subject)
+      && (filter.effect === 'ALL' || g.effect === filter.effect)
+      && (filter.status === 'ALL' || status === filter.status)
+      && (!filter.search || searchText.includes(filter.search.trim().toLowerCase()));
+  });
   return `
     <div class="o_stack">
       ${card(`<i class="fa-solid fa-shield-halved"></i> ${tx('منح التفويض', 'Authorization grants')}`,
         `<p class="o_hint">${tx('تتحكم المنحة في الإجراء والمورد والسجل والمستودع ونطاق الملكية أو شروط السياق ومدة الصلاحية. المنع الصريح يتغلب على السماح.', 'Each grant can constrain action, resource, record, warehouse, ownership/context conditions and validity. Explicit deny always overrides allow.')}</p>
+        <div class="o_filter_bar" style="margin:10px 0">
+          <input id="authGrantSearch" class="o_filter_input" value="${esc(filter.search)}"
+            placeholder="${tx('بحث في المستفيد أو الإجراء أو المورد…', 'Search subject, action or resource…')}">
+          <select id="authGrantSubject" class="o_filter_select">
+            <option value="ALL" ${filter.subject === 'ALL' ? 'selected' : ''}>${tx('كل المستفيدين', 'All subjects')}</option>
+            <option value="USER" ${filter.subject === 'USER' ? 'selected' : ''}>${tx('المستخدمون', 'Users')}</option>
+            <option value="ROLE" ${filter.subject === 'ROLE' ? 'selected' : ''}>${tx('الأدوار', 'Roles')}</option>
+          </select>
+          <select id="authGrantEffect" class="o_filter_select">
+            <option value="ALL" ${filter.effect === 'ALL' ? 'selected' : ''}>${tx('كل الآثار', 'All effects')}</option>
+            <option value="ALLOW" ${filter.effect === 'ALLOW' ? 'selected' : ''}>${tx('سماح', 'Allow')}</option>
+            <option value="DENY" ${filter.effect === 'DENY' ? 'selected' : ''}>${tx('منع', 'Deny')}</option>
+          </select>
+          <select id="authGrantStatus" class="o_filter_select">
+            <option value="ALL" ${filter.status === 'ALL' ? 'selected' : ''}>${tx('كل الحالات', 'All statuses')}</option>
+            <option value="ACTIVE" ${filter.status === 'ACTIVE' ? 'selected' : ''}>${tx('فعالة', 'Active')}</option>
+            <option value="SCHEDULED" ${filter.status === 'SCHEDULED' ? 'selected' : ''}>${tx('مجدولة', 'Scheduled')}</option>
+            <option value="REVOKED" ${filter.status === 'REVOKED' ? 'selected' : ''}>${tx('ملغاة', 'Revoked')}</option>
+          </select>
+          <span class="o_hint">${fmtNum(grantRows.length)} / ${fmtNum(grants.length)}</span>
+        </div>
         ${table(
           [
             { label: tx('المستفيد', 'Subject') },
@@ -462,7 +498,7 @@ function renderAuthorization(banned) {
             { label: tx('الحالة', 'Status') },
             { label: '', width: '76px' }
           ],
-          grants.map(g => ({
+          grantRows.map(g => ({
             cells: [
               g.subject_type === 'ROLE' ? roleLabel(g.role_name) : actorName(g.user_id),
               `<span class="o_cell_main">${esc(permissionLabel(g.permission_key))}</span><div class="o_cell_sub">${esc(g.permission_key)}</div>`,
@@ -1540,6 +1576,25 @@ function bind(_, main) {
 
   const authReload = main.querySelector('#authReload');
   if (authReload) authReload.onclick = () => { F.authorizationLoaded = false; F.authorizationError = ''; reload(); };
+  const updateGrantFilter = () => {
+    const search = main.querySelector('#authGrantSearch');
+    const subject = main.querySelector('#authGrantSubject');
+    const effect = main.querySelector('#authGrantEffect');
+    const status = main.querySelector('#authGrantStatus');
+    F.authorizationGrantFilter = {
+      search: search?.value || '',
+      subject: subject?.value || 'ALL',
+      effect: effect?.value || 'ALL',
+      status: status?.value || 'ALL'
+    };
+    reload();
+  };
+  const authGrantSearch = main.querySelector('#authGrantSearch');
+  if (authGrantSearch) authGrantSearch.oninput = updateGrantFilter;
+  ['authGrantSubject', 'authGrantEffect', 'authGrantStatus'].forEach(id => {
+    const control = main.querySelector('#' + id);
+    if (control) control.onchange = updateGrantFilter;
+  });
   const authGrantAdd = main.querySelector('#authGrantAdd');
   if (authGrantAdd) authGrantAdd.onclick = authorizationGrantModal;
   main.querySelectorAll('[data-auth-revoke]').forEach(button => {
