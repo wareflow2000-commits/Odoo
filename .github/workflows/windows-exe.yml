@@ -139,7 +139,7 @@ jobs:
               per_page: 100
             });
             for (const artifact of artifacts) {
-              if (names.has(artifact.name) && artifact.workflow_run?.id !== context.runId) {
+              if (names.has(artifact.name) && Number(artifact.workflow_run?.id) < Number(context.runId)) {
                 await github.rest.actions.deleteArtifact({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
