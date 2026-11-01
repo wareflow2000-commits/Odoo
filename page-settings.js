@@ -449,9 +449,14 @@ function renderAuthorization(banned) {
   };
   const filter = F.authorizationGrantFilter;
   const now = Date.now();
+  const grantStatus = g => {
+    if (g.revoked_at) return 'REVOKED';
+    if (new Date(g.valid_from).getTime() > now) return 'SCHEDULED';
+    if (g.valid_until && new Date(g.valid_until).getTime() <= now) return 'EXPIRED';
+    return 'ACTIVE';
+  };
   const grantRows = grants.filter(g => {
-    const status = g.revoked_at ? 'REVOKED'
-      : new Date(g.valid_from).getTime() > now ? 'SCHEDULED' : 'ACTIVE';
+    const status = grantStatus(g);
     const searchText = [
       g.permission_key, g.resource_type, g.resource_id, g.role_name,
       actorName(g.user_id), warehouseName(g.warehouse_id), g.grant_reason
@@ -482,6 +487,7 @@ function renderAuthorization(banned) {
             <option value="ALL" ${filter.status === 'ALL' ? 'selected' : ''}>${tx('كل الحالات', 'All statuses')}</option>
             <option value="ACTIVE" ${filter.status === 'ACTIVE' ? 'selected' : ''}>${tx('فعالة', 'Active')}</option>
             <option value="SCHEDULED" ${filter.status === 'SCHEDULED' ? 'selected' : ''}>${tx('مجدولة', 'Scheduled')}</option>
+            <option value="EXPIRED" ${filter.status === 'EXPIRED' ? 'selected' : ''}>${tx('منتهية', 'Expired')}</option>
             <option value="REVOKED" ${filter.status === 'REVOKED' ? 'selected' : ''}>${tx('ملغاة', 'Revoked')}</option>
           </select>
           <span class="o_hint">${fmtNum(grantRows.length)} / ${fmtNum(grants.length)}</span>
@@ -507,7 +513,10 @@ function renderAuthorization(banned) {
               badge(g.effect, g.effect === 'DENY' ? 'red' : 'green'),
               `${esc(g.scope_type)}${g.scope_type === 'CONTEXT' ? `<div class="o_cell_sub">${esc(JSON.stringify(g.conditions || {}))}</div>` : ''}`,
               g.valid_until ? fmtDateTime(g.valid_until) : '—',
-              g.revoked_at ? badge(tx('ملغاة', 'Revoked'), 'red') : (new Date(g.valid_from) > new Date() ? badge(tx('مجدولة', 'Scheduled'), 'blue') : badge(tx('فعالة', 'Active'), 'green')),
+              grantStatus(g) === 'REVOKED' ? badge(tx('ملغاة', 'Revoked'), 'red')
+                : grantStatus(g) === 'EXPIRED' ? badge(tx('منتهية', 'Expired'), 'gray')
+                : grantStatus(g) === 'SCHEDULED' ? badge(tx('مجدولة', 'Scheduled'), 'blue')
+                : badge(tx('فعالة', 'Active'), 'green'),
               !canWrite || g.revoked_at ? '' : `<button class="o_btn o_btn_ghost o_btn_sm" data-auth-revoke="${g.id}" title="${tx('إلغاء المنحة', 'Revoke grant')}" aria-label="${tx('إلغاء المنحة', 'Revoke grant')}"><i class="fa-solid fa-ban"></i></button>`
             ]
           })),
