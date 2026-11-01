@@ -277,6 +277,13 @@ const fs = require('fs');
         && store.data.items[0].id === itemId;
       const issueAllowed = offlineTransactionTypeAllowed('ISSUE');
       const receiptDenied = !offlineTransactionTypeAllowed('RECEIPT');
+      // Stocktake counts have a separate queue; no other voucher type may
+      // enter the transaction outbox while offline.
+      const nonIssueTransactionsDenied = [
+        'RECEIPT', 'GRN', 'SUPPLY', 'TRANSFER', 'STOCK_TRANSFER',
+        'RETURN', 'RETURN_TO_SUPPLIER', 'RETURN_FROM_CUSTOMER',
+        'ADJUSTMENT_IN', 'ADJUSTMENT_OUT', 'OPENING_BALANCE', 'STOCKTAKE'
+      ].every(type => !offlineTransactionTypeAllowed(type));
       const assignedWarehouseAllowed = offlineWarehouseAllowed(warehouseId);
       const otherWarehouseDenied = !offlineWarehouseAllowed('66666666-6666-4666-8666-666666666666');
       window.__session.profile.assigned_warehouse_ids = [warehouseId, '66666666-6666-4666-8666-666666666666'];
@@ -400,7 +407,7 @@ const fs = require('fs');
       queueSnapshot();
 
       return {
-        issueAllowed, receiptDenied, assignedWarehouseAllowed, otherWarehouseDenied,
+        issueAllowed, receiptDenied, nonIssueTransactionsDenied, assignedWarehouseAllowed, otherWarehouseDenied,
         multiWarehouseDenied, blockedMasterWrites: blockedMasterWrites.every(Boolean),
         legacyMasterQuarantined, legacyQueueBlocksFurtherOfflineWork, noOptimisticMasterWrite,
         countQueued: !!saved.pending_sync && queued,
