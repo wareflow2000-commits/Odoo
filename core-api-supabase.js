@@ -5,7 +5,7 @@
 // ============================================================================
 import { sb, from, rpc } from './core-supabase.js';
 import {
-  store, pullAll, insertRow, updateRow, deleteRow,
+  store, pullAll, persist, insertRow, updateRow, deleteRow,
   createTransactionBundle, approveTransaction as storeApprove, rejectTransaction as storeReject,
   createStocktakeSession as storeCreateStocktake, saveStocktakeCount as storeSaveCount,
   submitStocktake as storeSubmitStocktake, reviewStocktake as storeReview,
@@ -148,6 +148,12 @@ export async function createStorageArea({ warehouse_id, code, name }) {
   const { data, error } = await c.from('storage_areas').insert(payload).select().single();
   if (error) throw error;
   await pullAll({ silent: true }).catch(() => {});
+  const cached = store.get('storage_areas');
+  const existingIndex = cached.findIndex(row => row.id === data.id);
+  if (existingIndex >= 0) cached[existingIndex] = data;
+  else cached.push(data);
+  persist(true);
+  store.emit();
   return data;
 }
 
@@ -158,6 +164,12 @@ export async function updateStorageArea(id, { code, name }) {
   const { data, error } = await c.from('storage_areas').update(payload).eq('id', id).select().single();
   if (error) throw error;
   await pullAll({ silent: true }).catch(() => {});
+  const cached = store.get('storage_areas');
+  const existingIndex = cached.findIndex(row => row.id === data.id);
+  if (existingIndex >= 0) cached[existingIndex] = data;
+  else cached.push(data);
+  persist(true);
+  store.emit();
   return data;
 }
 
@@ -167,6 +179,9 @@ export async function deleteStorageArea(id) {
   const { error } = await c.from('storage_areas').delete().eq('id', id);
   if (error) throw error;
   await pullAll({ silent: true }).catch(() => {});
+  store.data.storage_areas = store.get('storage_areas').filter(row => row.id !== id);
+  persist(true);
+  store.emit();
 }
 
 export const createSection = export const createSection = (p) => insertRow('sections', {
@@ -189,7 +204,6 @@ export const updateShelf = (id, p) => updateRow('shelves', id, {
   storage_area_id: p.storage_area_id,
   code: String(p.code).trim(),
   full_path: p.full_path || null,
-  updated_at: new Date().toISOString()
 });
 export const deleteShelf = (id) => deleteRow('shelves', id);
 
