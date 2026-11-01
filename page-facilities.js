@@ -6,22 +6,20 @@ import {
   listHierarchy,
   createWarehouse, updateWarehouse, deleteWarehouse,
   createStorageArea, updateStorageArea, deleteStorageArea,
-  createSection, updateSection, deleteSection,
   createShelf, updateShelf, deleteShelf
 } from './core-api-supabase.js';
-import { fmtDate, esc, uuid } from './core-utils.js';
+import { esc } from './core-utils.js';
 import { printDocument } from './core-ui.js';
 import { qrSvg } from './core-qr.js';
 import { friendlyError } from './core-i18n.js';
 import { toast } from './core-toast.js';
-import { currentUser } from './core-auth.js';
-import { can, isAdmin, accessibleWarehouseIds } from './core-rbac.js';
+import { accessibleWarehouseIds } from './core-rbac.js';
 import { OW } from './core-registry.js';
 
 // ============ حالة محلية للصفحة ============
 const localState = {
   hierarchy: {
-    warehouses: [], storage_areas: [], zones: [], sections: [], shelves: []
+    warehouses: [], storage_areas: [], shelves: []
   },
   selectedWarehouseId: null,
   loading: false,
@@ -39,8 +37,6 @@ async function loadAll() {
     if (allowed !== null) {
       hierarchy.warehouses    = hierarchy.warehouses.filter(w => allowed.includes(w.id));
       hierarchy.storage_areas = hierarchy.storage_areas.filter(a => allowed.includes(a.warehouse_id));
-      hierarchy.zones         = hierarchy.zones.filter(z => allowed.includes(z.warehouse_id));
-      hierarchy.sections      = hierarchy.sections.filter(s => allowed.includes(s.warehouse_id));
       hierarchy.shelves       = hierarchy.shelves.filter(s => allowed.includes(s.warehouse_id));
     }
     localState.hierarchy = hierarchy;
@@ -65,21 +61,11 @@ async function loadAll() {
 // ============ مساعدات عرض ============
 function findWarehouse(id) { return localState.hierarchy.warehouses.find(w => w.id === id); }
 function findArea(id)      { return localState.hierarchy.storage_areas.find(a => a.id === id); }
-function findZone(id)      { return localState.hierarchy.zones.find(z => z.id === id); }
-function findSection(id)   { return localState.hierarchy.sections.find(s => s.id === id); }
 function findShelf(id)     { return localState.hierarchy.shelves.find(s => s.id === id); }
 
 function areaName(shelf) {
-  // نُظهر storage_area الحديث إن وُجد، وإلا zone القديم
-  const a = shelf.storage_area_id ? findArea(shelf.storage_area_id) : null;
-  if (a) return a.name;
-  const z = shelf.zone_id ? findZone(shelf.zone_id) : null;
-  return z?.name || '—';
-}
-
-function sectionName(section) {
-  const z = section.zone_id ? findZone(section.zone_id) : null;
-  return z?.name || '—';
+  const area = shelf.storage_area_id ? findArea(shelf.storage_area_id) : null;
+  return area?.name || '—';
 }
 
 function currentWh() {
@@ -94,7 +80,6 @@ function statsCards() {
       ${[
         ['المستودعات', h.warehouses.length, 'fa-warehouse', '#714B67'],
         ['مناطق التخزين', h.storage_areas.length, 'fa-map-location-dot', '#985184'],
-        ['الأقسام', h.sections.length, 'fa-layer-group', '#5B899E'],
         ['الأرفف', h.shelves.length, 'fa-bars-staggered', '#a24689']
       ].map(([label, val, icon, color]) => `
         <div class="o_facility_stat" style="background:#fff;border:1px solid #e3e6ea;border-radius:10px;padding:16px">
@@ -166,11 +151,9 @@ function storageAreasTable() {
   }
   const rows = areas.map(a => {
     const zonesShelves = localState.hierarchy.shelves.filter(s => s.storage_area_id === a.id).length;
-    const sections = localState.hierarchy.sections.filter(s => s.zone_id === a.legacy_zone_id).length;
     return `<tr>
       <td class="o_ref">${esc(a.code)}</td>
       <td><strong>${esc(a.name)}</strong></td>
-      <td class="num">${sections}</td>
       <td class="num">${zonesShelves}</td>
       <td><span class="o_badge o_badge_${a.is_active === false ? 'gray' : 'green'}">${a.is_active === false ? 'معطلة' : 'نشطة'}</span></td>
       <td>
@@ -190,44 +173,7 @@ function storageAreasTable() {
     </tr>`;
   }).join('');
   return `<div class="o_list_wrap"><table class="o_list_table">
-    <thead><tr><th>الرمز</th><th>الاسم</th><th class="num">أقسام</th>
-      <th class="num">أرفف</th><th>الحالة</th><th>إجراءات</th></tr></thead>
-    <tbody>${rows}</tbody>
-  </table></div>`;
-}
-
-// ============ جدول الأقسام ============
-function sectionsTable() {
-  const wh = currentWh();
-  if (!wh) return `<div style="padding:30px;text-align:center;color:#9ca3af">اختر مستودعًا أولًا.</div>`;
-  const sections = localState.hierarchy.sections.filter(s => s.warehouse_id === wh.id);
-  if (!sections.length) {
-    return `<div style="padding:30px;text-align:center;color:#9ca3af">
-      لا توجد أقسام في ${esc(wh.name)}. الأقسام مواقع داخلية اختيارية.
-    </div>`;
-  }
-  const rows = sections.map(s => {
-    const shelvCount = localState.hierarchy.shelves.filter(x => x.section_id === s.id).length;
-    return `<tr>
-      <td class="o_ref">${esc(s.code)}</td>
-      <td><strong>${esc(s.name)}</strong></td>
-      <td>${esc(sectionName(s))}</td>
-      <td class="num">${shelvCount}</td>
-      <td>
-        <button class="o_btn o_btn_secondary"
-                onclick="window.__facilityEdit('section','${s.id}')">
-          <i class="fa-solid fa-pen"></i>
-        </button>
-        <button class="o_btn o_btn_secondary"
-                onclick="window.__facilityDelete('section','${s.id}')">
-          <i class="fa-regular fa-trash-can"></i>
-        </button>
-      </td>
-    </tr>`;
-  }).join('');
-  return `<div class="o_list_wrap"><table class="o_list_table">
-    <thead><tr><th>الرمز</th><th>الاسم</th><th>منطقة التخزين</th>
-      <th class="num">أرفف</th><th>إجراءات</th></tr></thead>
+    <thead><tr><th>الرمز</th><th>الاسم</th><th class="num">أرفف</th><th>الحالة</th><th>إجراءات</th></tr></thead>
     <tbody>${rows}</tbody>
   </table></div>`;
 }
@@ -246,12 +192,10 @@ function shelvesTable() {
     .slice()
     .sort((a, b) => String(a.code).localeCompare(String(b.code)))
     .map(s => {
-      const sec = s.section_id ? findSection(s.section_id) : null;
       return `<tr>
         <td><input type="checkbox" data-qr-shelf="${s.id}" aria-label="QR ${esc(s.code)}"></td>
         <td class="o_ref">${esc(s.code)}</td>
         <td>${esc(areaName(s))}</td>
-        <td>${esc(sec?.name || '—')}</td>
         <td style="font-family:monospace;font-size:11px;color:#6b7280">${esc(s.full_path || '—')}</td>
         <td>
           <button class="o_btn o_btn_secondary"
@@ -271,7 +215,7 @@ function shelvesTable() {
     }).join('');
   return `<div class="o_list_wrap"><table class="o_list_table">
     <thead><tr><th></th><th>الرمز</th><th>منطقة التخزين</th>
-      <th>القسم</th><th>المسار الكامل</th><th>إجراءات</th></tr></thead>
+      <th>المسار الكامل</th><th>إجراءات</th></tr></thead>
     <tbody>${rows}</tbody>
   </table></div>`;
 }
@@ -282,7 +226,6 @@ function buildFacilityModal(kind, id) {
   const titles = {
     warehouse: editing ? 'تعديل مستودع' : 'مستودع جديد',
     area: editing ? 'تعديل منطقة تخزين' : 'منطقة تخزين جديدة',
-    section: editing ? 'تعديل قسم' : 'قسم جديد',
     shelf: editing ? 'تعديل رف' : 'رف جديد'
   };
   const wh = currentWh();
@@ -312,24 +255,6 @@ function buildFacilityModal(kind, id) {
         <input name="name" value="${esc(a.name || '')}" required></div>`;
   }
 
-  if (kind === 'section') {
-    const s = editing ? findSection(id) : {};
-    const selWh = editing ? s.warehouse_id : localState.selectedWarehouseId;
-    const areas = localState.hierarchy.storage_areas.filter(a => a.warehouse_id === selWh);
-    const areaOptions = areas.map(a =>
-      `<option value="${a.legacy_zone_id || ''}" ${a.legacy_zone_id === s.zone_id ? 'selected' : ''}>${esc(a.name)} (${esc(a.code)})</option>`
-    ).join('');
-    fieldsHtml = `
-      <div class="o_field"><label>المستودع</label>
-        <select name="warehouse_id" required>${whOptions}</select></div>
-      <div class="o_field"><label>منطقة التخزين</label>
-        <select name="zone_id" required>${areaOptions || '<option value="">لا توجد مناطق — أضف منطقة أولًا</option>'}</select></div>
-      <div class="o_field"><label>الرمز</label>
-        <input name="code" value="${esc(s.code || '')}" required></div>
-      <div class="o_field"><label>الاسم</label>
-        <input name="name" value="${esc(s.name || '')}" required></div>`;
-  }
-
   if (kind === 'shelf') {
     const sh = editing ? findShelf(id) : {};
     const selWh = editing ? sh.warehouse_id : localState.selectedWarehouseId;
@@ -337,21 +262,11 @@ function buildFacilityModal(kind, id) {
     const areaOptions = areas.map(a =>
       `<option value="${a.id}" ${a.id === sh.storage_area_id ? 'selected' : ''}>${esc(a.name)} (${esc(a.code)})</option>`
     ).join('');
-    const selAreaId = editing ? sh.storage_area_id : areas[0]?.id;
-    const sections = localState.hierarchy.sections.filter(s =>
-      s.warehouse_id === selWh &&
-      (!selAreaId || s.zone_id === findArea(selAreaId)?.legacy_zone_id)
-    );
-    const secOptions = sections.map(s =>
-      `<option value="${s.id}" ${s.id === sh.section_id ? 'selected' : ''}>${esc(s.name)} (${esc(s.code)})</option>`
-    ).join('');
     fieldsHtml = `
       <div class="o_field"><label>المستودع</label>
         <select name="warehouse_id" required>${whOptions}</select></div>
       <div class="o_field"><label>منطقة التخزين</label>
         <select name="storage_area_id" required>${areaOptions || '<option value="">لا توجد مناطق</option>'}</select></div>
-      <div class="o_field"><label>القسم (اختياري)</label>
-        <select name="section_id"><option value="">بدون قسم</option>${secOptions}</select></div>
       <div class="o_field"><label>الرمز</label>
         <input name="code" value="${esc(sh.code || '')}" required></div>
       <div class="o_field" style="grid-column:1/-1"><label>المسار الكامل (يُبنى تلقائيًا إن تركته فارغًا)</label>
@@ -380,7 +295,6 @@ function buildFacilityModal(kind, id) {
 
 function itemWarehouseId(kind, id) {
   if (kind === 'area')   return findArea(id)?.warehouse_id;
-  if (kind === 'section')return findSection(id)?.warehouse_id;
   if (kind === 'shelf')  return findShelf(id)?.warehouse_id;
   return null;
 }
@@ -434,18 +348,6 @@ window.__facilitySave = async function (kind, id) {
       else    await createStorageArea(data);
       toast('تم الحفظ');
     }
-    else if (kind === 'section') {
-      if (!data.warehouse_id || !data.zone_id || !data.code?.trim() || !data.name?.trim()) {
-        toast('كل الحقول مطلوبة', 'error'); return;
-      }
-      const zone = findZone(data.zone_id);
-      if (!zone || zone.warehouse_id !== data.warehouse_id) {
-        toast('المنطقة لا تنتمي للمستودع المحدد', 'error'); return;
-      }
-      if (id) await updateSection(id, data);
-      else    await createSection(data);
-      toast('تم الحفظ');
-    }
     else if (kind === 'shelf') {
       if (!data.warehouse_id || !data.storage_area_id || !data.code?.trim()) {
         toast('المستودع ومنطقة التخزين والرمز مطلوبة', 'error'); return;
@@ -456,9 +358,7 @@ window.__facilitySave = async function (kind, id) {
       }
       const payload = {
         warehouse_id: data.warehouse_id,
-        zone_id: area.legacy_zone_id,
         storage_area_id: area.id,
-        section_id: data.section_id || null,
         code: data.code,
         full_path: data.full_path?.trim() || `${area.name} / ${data.code.trim()}`
       };
@@ -484,27 +384,15 @@ window.__facilityDelete = async function (kind, id) {
   if (kind === 'warehouse') {
     const w = findWarehouse(id);
     label = `${w?.name || ''}`;
-    const zones = h.zones.filter(z => z.warehouse_id === id).length;
     const areas = h.storage_areas.filter(a => a.warehouse_id === id).length;
-    const secs  = h.sections.filter(s => s.warehouse_id === id).length;
     const shelv = h.shelves.filter(s => s.warehouse_id === id).length;
-    if (zones) dependents.push(`${zones} منطقة`);
     if (areas) dependents.push(`${areas} منطقة تخزين`);
-    if (secs)  dependents.push(`${secs} قسم`);
     if (shelv) dependents.push(`${shelv} رف`);
   }
   else if (kind === 'area') {
     const a = findArea(id);
     label = `${a?.name || ''}`;
     const shelv = h.shelves.filter(s => s.storage_area_id === id).length;
-    const secs  = h.sections.filter(s => s.zone_id === a?.legacy_zone_id).length;
-    if (shelv) dependents.push(`${shelv} رف`);
-    if (secs)  dependents.push(`${secs} قسم`);
-  }
-  else if (kind === 'section') {
-    const s = findSection(id);
-    label = `${s?.name || ''}`;
-    const shelv = h.shelves.filter(x => x.section_id === id).length;
     if (shelv) dependents.push(`${shelv} رف`);
   }
   else if (kind === 'shelf') {
@@ -521,7 +409,6 @@ window.__facilityDelete = async function (kind, id) {
   try {
     if (kind === 'warehouse')  await deleteWarehouse(id);
     if (kind === 'area')       await deleteStorageArea(id);
-    if (kind === 'section')    await deleteSection(id);
     if (kind === 'shelf')      await deleteShelf(id);
     toast('تم الحذف');
     await loadAll();
@@ -534,7 +421,7 @@ window.__facilityDelete = async function (kind, id) {
 
 // ============ طباعة QR ============
 function qrPayload(kind, record) {
-  const typeMap = { warehouse: 'warehouse', area: 'zone', section: 'section', shelf: 'shelf' };
+  const typeMap = { warehouse: 'warehouse', area: 'storage_area', shelf: 'shelf' };
   return JSON.stringify({
     app: 'OW-WMS',
     version: 1,
@@ -626,7 +513,6 @@ function bindModalDependencies() {
 
   const whSel = form.querySelector('[name="warehouse_id"]');
   const areaSel = form.querySelector('[name="storage_area_id"]');
-  const secSel = form.querySelector('[name="section_id"]');
 
   if (whSel && areaSel) {
     whSel.addEventListener('change', () => {
@@ -635,18 +521,6 @@ function bindModalDependencies() {
       areaSel.innerHTML = areas.length
         ? areas.map(a => `<option value="${a.id}">${esc(a.name)} (${esc(a.code)})</option>`).join('')
         : '<option value="">لا توجد مناطق</option>';
-      if (secSel) secSel.innerHTML = '<option value="">بدون قسم</option>';
-    });
-  }
-  if (areaSel && secSel) {
-    areaSel.addEventListener('change', () => {
-      const areaId = areaSel.value;
-      const area = findArea(areaId);
-      const sections = localState.hierarchy.sections.filter(s =>
-        s.zone_id === area?.legacy_zone_id
-      );
-      secSel.innerHTML = '<option value="">بدون قسم</option>' +
-        sections.map(s => `<option value="${s.id}">${esc(s.name)} (${esc(s.code)})</option>`).join('');
     });
   }
 }
@@ -716,9 +590,6 @@ const facilitiesPage = {
               <button class="o_btn o_btn_secondary" onclick="window.__facilityEdit('area','')">
                 <i class="fa-solid fa-plus"></i> منطقة تخزين
               </button>
-              <button class="o_btn o_btn_secondary" onclick="window.__facilityEdit('section','')">
-                <i class="fa-solid fa-plus"></i> قسم
-              </button>
               <button class="o_btn o_btn_secondary" onclick="window.__facilityEdit('shelf','')">
                 <i class="fa-solid fa-plus"></i> رف
               </button>
@@ -751,14 +622,6 @@ const facilitiesPage = {
               مناطق التخزين — ${esc(wh.name)}
             </h3>
             ${storageAreasTable()}
-          </div>
-
-          <div class="o_facilities_card" style="background:#fff;border:1px solid #e3e6ea;border-radius:10px;padding:18px;margin-bottom:16px">
-            <h3 style="margin:0 0 12px;font-size:14px;font-weight:600;color:#374151">
-              <i class="fa-solid fa-layer-group" style="color:#5B899E;margin-inline-end:6px"></i>
-              الأقسام — ${esc(wh.name)}
-            </h3>
-            ${sectionsTable()}
           </div>
 
           <div class="o_facilities_card" style="background:#fff;border:1px solid #e3e6ea;border-radius:10px;padding:18px;margin-bottom:16px">

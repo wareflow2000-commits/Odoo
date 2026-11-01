@@ -5,7 +5,7 @@
 // ============================================================================
 import { sb, from, rpc } from './core-supabase.js';
 import {
-  store, pullAll, insertRow, updateRow, deleteRow,
+  store, pullAll, persist, insertRow, updateRow, deleteRow,
   createTransactionBundle, approveTransaction as storeApprove, rejectTransaction as storeReject,
   createStocktakeSession as storeCreateStocktake, saveStocktakeCount as storeSaveCount,
   submitStocktake as storeSubmitStocktake, reviewStocktake as storeReview,
@@ -140,53 +140,48 @@ export const updateWarehouse = (id, { code, name }) =>
   updateRow('warehouses', id, { code: String(code).trim(), name: String(name).trim(), updated_at: new Date().toISOString() });
 export const deleteWarehouse = (id) => deleteRow('warehouses', id);
 
-// storage_areas is the modern face of the legacy zone; keep both in sync.
+// Storage areas are first-class master data; never mirror them into legacy zones.
 export async function createStorageArea({ warehouse_id, code, name }) {
+  const payload = { warehouse_id, code: String(code || '').trim(), name: String(name || '').trim(), is_active: true };
+  if (!payload.warehouse_id || !payload.code || !payload.name) throw new Error('Warehouse, storage-area code and name are required.');
   const c = await sb();
-  const { data: zone, error: zerr } = await c.from('zones').insert({
-    warehouse_id, code: String(code).trim(), name: String(name).trim()
-  }).select().single();
-  if (zerr) {
-    if (!navigator.onLine) return insertRow('storage_areas', { warehouse_id, code, name, is_active: true });
-    throw zerr;
-  }
-  const { data: area, error: aerr } = await c.from('storage_areas').insert({
-    warehouse_id, code: String(code).trim(), name: String(name).trim(),
-    legacy_zone_id: zone.id, is_active: true
-  }).select().single();
-  if (aerr) {
-    await c.from('zones').delete().eq('id', zone.id).catch(() => {});
-    throw aerr;
-  }
+  const { data, error } = await c.from('storage_areas').insert(payload).select().single();
+  if (error) throw error;
   await pullAll({ silent: true }).catch(() => {});
-  return area;
+  const cached = store.get('storage_areas');
+  const existingIndex = cached.findIndex(row => row.id === data.id);
+  if (existingIndex >= 0) cached[existingIndex] = data;
+  else cached.push(data);
+  persist(true);
+  store.emit();
+  return data;
 }
 
 export async function updateStorageArea(id, { code, name }) {
+  const payload = { code: String(code || '').trim(), name: String(name || '').trim(), updated_at: new Date().toISOString() };
+  if (!id || !payload.code || !payload.name) throw new Error('Storage-area id, code and name are required.');
   const c = await sb();
-  const { data: area, error: ferr } = await c.from('storage_areas').select('*').eq('id', id).single();
-  if (ferr) {
-    if (!navigator.onLine) return updateRow('storage_areas', id, { code, name });
-    throw ferr;
-  }
-  if (area.legacy_zone_id) {
-    await c.from('zones').update({ code: String(code).trim(), name: String(name).trim() }).eq('id', area.legacy_zone_id);
-  }
-  const { data, error } = await c.from('storage_areas').update({
-    code: String(code).trim(), name: String(name).trim(), updated_at: new Date().toISOString()
-  }).eq('id', id).select().single();
+  const { data, error } = await c.from('storage_areas').update(payload).eq('id', id).select().single();
   if (error) throw error;
   await pullAll({ silent: true }).catch(() => {});
+  const cached = store.get('storage_areas');
+  const existingIndex = cached.findIndex(row => row.id === data.id);
+  if (existingIndex >= 0) cached[existingIndex] = data;
+  else cached.push(data);
+  persist(true);
+  store.emit();
   return data;
 }
 
 export async function deleteStorageArea(id) {
+  if (!id) throw new Error('Storage-area id is required.');
   const c = await sb();
-  const { data: area } = await c.from('storage_areas').select('*').eq('id', id).single();
-  if (area?.legacy_zone_id) await c.from('zones').delete().eq('id', area.legacy_zone_id).catch(() => {});
   const { error } = await c.from('storage_areas').delete().eq('id', id);
   if (error) throw error;
   await pullAll({ silent: true }).catch(() => {});
+  store.data.storage_areas = store.get('storage_areas').filter(row => row.id !== id);
+  persist(true);
+  store.emit();
 }
 
 export const createSection = (p) => insertRow('sections', {
@@ -199,14 +194,16 @@ export const updateSection = (id, p) => updateRow('sections', id, {
 export const deleteSection = (id) => deleteRow('sections', id);
 
 export const createShelf = (p) => insertRow('shelves', {
-  warehouse_id: p.warehouse_id, zone_id: p.zone_id,
-  section_id: p.section_id || null, storage_area_id: p.storage_area_id || null,
-  code: String(p.code).trim(), full_path: p.full_path || null, created_at: new Date().toISOString()
+  warehouse_id: p.warehouse_id,
+  storage_area_id: p.storage_area_id,
+  code: String(p.code).trim(),
+  full_path: p.full_path || null,
+  created_at: new Date().toISOString()
 });
 export const updateShelf = (id, p) => updateRow('shelves', id, {
-  zone_id: p.zone_id, section_id: p.section_id || null,
-  storage_area_id: p.storage_area_id || null,
-  code: String(p.code).trim(), full_path: p.full_path || null, updated_at: new Date().toISOString()
+  storage_area_id: p.storage_area_id,
+  code: String(p.code).trim(),
+  full_path: p.full_path || null,
 });
 export const deleteShelf = (id) => deleteRow('shelves', id);
 

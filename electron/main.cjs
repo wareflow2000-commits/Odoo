@@ -80,7 +80,7 @@ async function createWindow(url) {
     show: false,
     autoHideMenuBar: true,
     backgroundColor: '#f2eff2',
-    icon: path.join(APP_ROOT, 'assets', 'logo.png'),
+    icon: path.join(APP_ROOT, 'assets', 'ow.ico'),
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,

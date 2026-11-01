@@ -1602,8 +1602,7 @@ export function shelfName(id) { const s = byId('shelves', id); return s ? s.code
 export function shelfPath(id) {
   const s = byId('shelves', id);
   if (!s) return '—';
-  return s.full_path || [warehouseName(s.warehouse_id), zoneName(s.zone_id),
-    s.section_id ? sectionName(s.section_id) : '', s.code].filter(Boolean).join(' / ');
+  return s.full_path || [warehouseName(s.warehouse_id), areaName(s.storage_area_id), s.code].filter(Boolean).join(' / ');
 }
 export function profileName(id) {
   const p = byId('profiles', id);
