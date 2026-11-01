@@ -16,7 +16,7 @@ function bootOptionalSQLite(){
   async function opfsWrite(bytes){if(!navigator.storage?.getDirectory)throw new Error('OPFS unavailable');const root=await navigator.storage.getDirectory();const h=await root.getFileHandle(DB_FILE,{create:true});const w=await h.createWritable();await w.write(bytes);await w.close()}
   async function init(){
     if(!window.initSqlJs) throw new Error('SQLite WASM loader unavailable');
-    SQL=await window.initSqlJs({locateFile:f=>'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.13.0/'+f});
+    SQL=await window.initSqlJs({locateFile:f=>new URL('vendor/'+f,location.href).toString()});
     const bytes=await opfsRead(); db=bytes?new SQL.Database(bytes):new SQL.Database(); db.run(schema);
     // Retire obsolete local entity tables; historical transaction payloads remain intact.
     db.run('DROP TABLE IF EXISTS zones');
