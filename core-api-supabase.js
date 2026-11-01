@@ -300,9 +300,14 @@ export async function listPermissions() {
 }
 export async function listRolePermissions() { return rows('role_permissions'); }
 
-export async function replaceRolePermissions(roleName, keys) {
-  const res = await rpc('admin_replace_role_permissions', {
-    p_role_name: roleName, p_permission_keys: keys
+export async function replaceRolePermissions(roleName, keys, scopeMode = 'INHERIT', warehouseIds = []) {
+  // Save permissions and warehouse scope atomically through the institutional
+  // access-config RPC. Avoid the legacy permission-only mutation path.
+  const res = await rpc('admin_save_role_access_config', {
+    p_role_name: roleName,
+    p_permission_keys: keys,
+    p_scope_mode: scopeMode,
+    p_warehouse_ids: Array.isArray(warehouseIds) ? warehouseIds : []
   });
   await pullAll({ silent: true }).catch(() => {});
   return res;
