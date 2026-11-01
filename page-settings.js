@@ -358,6 +358,14 @@ function renderRoles(banned) {
     return hay.includes(F.permSearch.toLowerCase());
   });
   const active = new Set(roleKeys(F.role));
+  const roleScope = store.get('role_warehouse_scopes').find(row =>
+    String(row.role_name || '').toUpperCase() === F.role
+  ) || null;
+  const scopeMode = String(roleScope?.scope_mode || 'INHERIT').toUpperCase();
+  const selectedWarehouseIds = new Set(Array.isArray(roleScope?.warehouse_ids) ? roleScope.warehouse_ids : []);
+  const warehouses = [...store.get('warehouses')].sort((a, b) =>
+    String(a.code || '').localeCompare(String(b.code || ''))
+  );
   const groups = new Map();
   for (const p of perms) {
     const g = p.key.includes(':') ? p.key.split(':')[0] : 'other';
@@ -365,6 +373,30 @@ function renderRoles(banned) {
     groups.get(g).push(p);
   }
   return `
+    ${card(`<i class="fa-solid fa-warehouse"></i> ${tx('نطاق المستودعات للدور', 'Role warehouse scope')}`,
+      `<p class="o_hint">${tx(
+        'يحدد هذا النطاق الحد الأعلى لمستودعات الدور. تظل مستودعات المستخدم المعيّنة له قيد التطبيق؛ وعند اختيار مستودعات محددة يتم تقاطعها مع تعيينات المستخدم.',
+        'This is the role-level warehouse ceiling. A user’s own assigned warehouses still apply; SELECTED scope is intersected with that user assignment.'
+      )}</p>
+      <div class="o_field">
+        <label for="roleScopeMode">${tx('طريقة تحديد النطاق', 'Scope mode')}</label>
+        <select id="roleScopeMode" class="o_filter_select" ${canWrite ? '' : 'disabled'}>
+          <option value="INHERIT" ${scopeMode === 'INHERIT' ? 'selected' : ''}>${tx('يرث نطاق المستخدم', 'Inherit user scope')}</option>
+          <option value="SELECTED" ${scopeMode === 'SELECTED' ? 'selected' : ''}>${tx('مستودعات محددة', 'Selected warehouses')}</option>
+          <option value="ALL" ${scopeMode === 'ALL' ? 'selected' : ''}>${tx('كل المستودعات', 'All warehouses')}</option>
+        </select>
+      </div>
+      <div class="o_check_grid" id="roleScopeWarehouses" style="margin-top:10px">
+        ${warehouses.map(w => `<label class="o_checkbox">
+          <input type="checkbox" data-role-warehouse="${esc(w.id)}" ${selectedWarehouseIds.has(w.id) ? 'checked' : ''}
+            ${canWrite && scopeMode === 'SELECTED' ? '' : 'disabled'}>
+          ${esc(w.code || '')} — ${esc(w.name || '')}
+        </label>`).join('') || `<span class="o_muted">${tx('لا توجد مستودعات معرفة.', 'No warehouses are defined.')}</span>`}
+      </div>
+      <small class="o_hint">${tx(
+        'تنبيه: «كل المستودعات» لا يتجاوز تعيين المستودعات الفردي إن كان موجوداً. لا تستخدمه إلا عندما يكون نطاق الدور العام مقصوداً.',
+        'Warning: “All warehouses” does not override an individual user assignment when one exists. Use it only when broad role scope is intentional.'
+      )}</small>`, '', 'flush-body')}
     <div class="o_perm_bar">
       <select class="o_filter_select" id="permRole">
         ${ROLES.filter(r => r !== 'SUPER_ADMIN').map(r => `<option value="${r}" ${F.role === r ? 'selected' : ''}>${roleLabel(r)}</option>`).join('')}
@@ -1418,6 +1450,12 @@ function bind(_, main) {
       t = setTimeout(() => { F.permSearch = permSearch.value; reload(); }, 300);
     });
   }
+  const roleScopeMode = main.querySelector('#roleScopeMode');
+  if (roleScopeMode) roleScopeMode.onchange = () => {
+    const enabled = roleScopeMode.value === 'SELECTED' && canAdministerProfiles()
+      && navigator.onLine && !window.__session?.offline;
+    main.querySelectorAll('[data-role-warehouse]').forEach(c => { c.disabled = !enabled; });
+  };
   const all = main.querySelector('#permAll');
   if (all) all.onclick = () => main.querySelectorAll('[data-perm]').forEach(c => { if (!c.disabled) c.checked = true; });
   const none = main.querySelector('#permNone');
@@ -1433,15 +1471,23 @@ function bind(_, main) {
       return;
     }
     const keys = [...main.querySelectorAll('[data-perm]')].filter(c => c.checked).map(c => c.dataset.perm);
+    const scopeMode = String(main.querySelector('#roleScopeMode')?.value || 'INHERIT').toUpperCase();
+    const warehouseIds = [...main.querySelectorAll('[data-role-warehouse]:checked')].map(c => c.dataset.roleWarehouse);
+    if (scopeMode === 'SELECTED' && warehouseIds.length === 0) {
+      toast(tx('اختر مستودعاً واحداً على الأقل لهذا النطاق.', 'Select at least one warehouse for SELECTED scope.'), 'warning');
+      return;
+    }
     if (!await confirmDialog({
-      title: tx('حفظ صلاحيات الدور', 'Save role permissions'),
-      message: tx(`سيتم استبدال جميع صلاحيات الدور "${roleLabel(F.role)}" بـ ${keys.length} صلاحية.`,
-        `All permissions for "${roleLabel(F.role)}" will be replaced with ${keys.length} entries.`),
+      title: tx('حفظ إعدادات الدور', 'Save role access configuration'),
+      message: tx(
+        `سيتم استبدال صلاحيات الدور "${roleLabel(F.role)}" (${keys.length}) وحفظ نطاق المستودعات (${scopeMode === 'SELECTED' ? warehouseIds.length : scopeMode}).`,
+        `This replaces "${roleLabel(F.role)}" permissions (${keys.length}) and saves warehouse scope (${scopeMode === 'SELECTED' ? warehouseIds.length : scopeMode}).`
+      ),
       confirmText: tx('حفظ', 'Save'), tone: 'primary'
     })) return;
     save.disabled = true;
     try {
-      await replaceRolePermissions(F.role, keys);
+      await replaceRolePermissions(F.role, keys, scopeMode, warehouseIds);
       toast(tx('تم تحديث صلاحيات الدور', 'Role permissions updated'), 'success');
       reload();
     } catch (e) { toast(String(e.message || e), 'error'); }
