@@ -481,7 +481,7 @@ function renderAuthorization(banned) {
   return `
     <div class="o_stack">
       ${card(`<i class="fa-solid fa-shield-halved"></i> ${tx('منح التفويض', 'Authorization grants')}`,
-        `<p class="o_hint">${tx('تتحكم المنحة في الإجراء والمورد والسجل والمستودع ونطاق الملكية أو شروط السياق ومدة الصلاحية. المنع الصريح يتغلب على السماح.', 'Each grant can constrain action, resource, record, warehouse, ownership/context conditions and validity. Explicit deny always overrides allow.')}</p>
+        `<p class="o_hint">${tx('تتحكم المنحة في الإجراء والمورد والسجل والمستودع ونطاق الملكية أو شروط السياق ومدة الصلاحية. المنع الصريح يتغلب على السماح. المنح سجل تدقيقي غير قابل للتحرير؛ لتغييرها ألغِ المنحة القديمة بسبب موثق وأنشئ منحة جديدة.', 'Each grant can constrain action, resource, record, warehouse, ownership/context conditions and validity. Explicit deny always overrides allow. Grants are audit records, not editable in place; revoke with a documented reason and create a replacement.')}</p>
         <div class="o_filter_bar" style="margin:10px 0">
           <input id="authGrantSearch" class="o_filter_input" value="${esc(filter.search)}"
             placeholder="${tx('بحث في المستفيد أو الإجراء أو المورد…', 'Search subject, action or resource…')}">
@@ -514,6 +514,8 @@ function renderAuthorization(banned) {
             { label: tx('النطاق', 'Scope') },
             { label: tx('يبدأ في', 'Valid from') },
             { label: tx('ينتهي في', 'Valid until') },
+            { label: tx('سبب المنح', 'Grant reason') },
+            { label: tx('منحها', 'Granted by') },
             { label: tx('الحالة', 'Status') },
             { label: '', width: '76px' }
           ],
@@ -527,7 +529,10 @@ function renderAuthorization(banned) {
               `${esc(g.scope_type)}${g.scope_type === 'CONTEXT' ? `<div class="o_cell_sub">${esc(JSON.stringify(g.conditions || {}))}</div>` : ''}`,
               g.valid_from ? fmtDateTime(g.valid_from) : '—',
               g.valid_until ? fmtDateTime(g.valid_until) : '—',
-              grantStatus(g) === 'REVOKED' ? badge(tx('ملغاة', 'Revoked'), 'red')
+              esc(g.grant_reason || '—'),
+              esc(actorName(g.granted_by)),
+              grantStatus(g) === 'REVOKED'
+                ? `${badge(tx('ملغاة', 'Revoked'), 'red')}${g.revocation_reason ? `<div class="o_cell_sub">${esc(g.revocation_reason)}</div>` : ''}`
                 : grantStatus(g) === 'EXPIRED' ? badge(tx('منتهية', 'Expired'), 'gray')
                 : grantStatus(g) === 'SCHEDULED' ? badge(tx('مجدولة', 'Scheduled'), 'blue')
                 : badge(tx('فعالة', 'Active'), 'green'),
