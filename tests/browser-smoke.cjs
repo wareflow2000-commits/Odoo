@@ -141,46 +141,28 @@ const fs = require('fs');
         const resourceType = form.querySelector('[name="resource_type"]');
         const warehouse = form.querySelector('[name="warehouse_id"]');
         const conditions = form.querySelector('[name="conditions"]');
-        const userGrantDebug = {
-          subject: subject.value, scope: scope.value, allDisabled: allScope.disabled,
-          expiryRequired: expiry.required, resourceRequired: resourceType.required,
-          resourceReadOnly: resourceType.readOnly, resourceValue: resourceType.value,
-          warehouseRequired: warehouse.required, conditionsRequired: conditions.required
-        };
+
         const userGrantRules = subject.value === 'USER' && allScope.disabled
           && expiry.required && resourceType.required && resourceType.readOnly
           && warehouse.required && resourceType.value === 'transaction';
+
         subject.value = 'ROLE';
         subject.dispatchEvent(new Event('change', { bubbles: true }));
-        const roleGrantDebug = {
-          subject: subject.value, scope: scope.value, allDisabled: allScope.disabled,
-          expiryRequired: expiry.required, resourceReadOnly: resourceType.readOnly,
-          warehouseRequired: warehouse.required
-        };
         const roleGrantRules = !allScope.disabled && !expiry.required
           && !resourceType.readOnly && !warehouse.required;
+
         scope.value = 'CONTEXT';
         scope.dispatchEvent(new Event('change', { bubbles: true }));
-        const contextDebug = {
-          scope: scope.value, conditionsRequired: conditions.required,
-          conditionsDisplay: form.querySelector('#authConditionsWrap')?.style.display
-        };
         const contextRules = conditions.required
           && form.querySelector('#authConditionsWrap')?.style.display !== 'none';
+
         subject.value = 'USER';
         subject.dispatchEvent(new Event('change', { bubbles: true }));
-        const userContextDebug = {
-          subject: subject.value, scope: scope.value, allDisabled: allScope.disabled,
-          expiryRequired: expiry.required, warehouseRequired: warehouse.required,
-          conditionsRequired: conditions.required
-        };
         const userContextRules = allScope.disabled && expiry.required
           && warehouse.required && conditions.required;
+
         document.querySelector('#authGrantCancel')?.click();
-        return {
-          checks: { userGrantRules, roleGrantRules, contextRules, userContextRules },
-          debug: { userGrantDebug, roleGrantDebug, contextDebug, userContextDebug }
-        };
+        return { userGrantRules, roleGrantRules, contextRules, userContextRules };
       } finally {
         document.querySelector('#authGrantCancel')?.click();
         window.__session = original.session;
@@ -189,7 +171,7 @@ const fs = require('fs');
         store.data.warehouses = original.warehouses;
       }
     });
-    if (Object.values(authorizationGrantUiChecks.checks).some(value => value !== true)) {
+    if (Object.values(authorizationGrantUiChecks).some(value => value !== true)) {
       throw new Error('Authorization grant UI checks failed: ' + JSON.stringify(authorizationGrantUiChecks));
     }
 
