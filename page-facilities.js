@@ -8,13 +8,12 @@ import {
   createStorageArea, updateStorageArea, deleteStorageArea,
   createShelf, updateShelf, deleteShelf
 } from './core-api-supabase.js';
-import { fmtDate, esc, uuid } from './core-utils.js';
+import { esc } from './core-utils.js';
 import { printDocument } from './core-ui.js';
 import { qrSvg } from './core-qr.js';
 import { friendlyError } from './core-i18n.js';
 import { toast } from './core-toast.js';
-import { currentUser } from './core-auth.js';
-import { can, isAdmin, accessibleWarehouseIds } from './core-rbac.js';
+import { accessibleWarehouseIds } from './core-rbac.js';
 import { OW } from './core-registry.js';
 
 // ============ حالة محلية للصفحة ============
@@ -524,7 +523,6 @@ function bindModalDependencies() {
         : '<option value="">لا توجد مناطق</option>';
     });
   }
-
 }
 
 // بعد كل عرض للنموذج، نربط
