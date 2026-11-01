@@ -534,7 +534,9 @@ function renderAuthorization(banned) {
             { label: tx('المورد / السجل', 'Resource / record') },
             { label: tx('المستودع', 'Warehouse') },
             { label: tx('القرار', 'Decision') },
-            { label: tx('السبب', 'Reason') }
+            { label: tx('السبب', 'Reason') },
+            { label: tx('المنحة المطابقة', 'Matched grant') },
+            { label: tx('سياق القرار', 'Decision context') }
           ],
           decisions.map(d => ({
             cells: [
@@ -544,7 +546,11 @@ function renderAuthorization(banned) {
               `${esc(d.resource_type || '—')}${d.resource_id ? `<div class="o_cell_sub">${esc(d.resource_id)}</div>` : ''}`,
               esc(warehouseName(d.warehouse_id)),
               badge(d.decision, d.decision === 'DENY' ? 'red' : 'green'),
-              esc(d.decision_reason || '—')
+              esc(d.decision_reason || '—'),
+              d.matched_grant_id ? `<span class="o_cell_sub">${esc(d.matched_grant_id)}</span>` : '—',
+              d.context && Object.keys(d.context).length
+                ? `<details><summary>${tx('عرض السياق', 'View context')}</summary><pre class="o_code_block">${esc(JSON.stringify(d.context, null, 2))}</pre></details>`
+                : '—'
             ]
           })),
           { emptyTitle: tx('لا توجد قرارات مسجلة في الفترة المحددة', 'No decisions recorded in this period') }
