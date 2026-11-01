@@ -375,8 +375,8 @@ function renderRoles(banned) {
   return `
     ${card(`<i class="fa-solid fa-warehouse"></i> ${tx('نطاق المستودعات للدور', 'Role warehouse scope')}`,
       `<p class="o_hint">${tx(
-        'يحدد هذا النطاق الحد الأعلى لمستودعات الدور. تظل مستودعات المستخدم المعيّنة له قيد التطبيق؛ وعند اختيار مستودعات محددة يتم تقاطعها مع تعيينات المستخدم.',
-        'This is the role-level warehouse ceiling. A user’s own assigned warehouses still apply; SELECTED scope is intersected with that user assignment.'
+        'يحدد هذا النطاق الحد الأعلى لمستودعات الدور. إذا كانت للمستخدم مستودعات معيّنة، يُطبّق التقاطع بينها وبين نطاق الدور؛ وإذا لم تكن له تعيينات فردية، يصبح نطاق الدور المحدد هو نطاقه الفعلي.',
+        'This is the role-level warehouse ceiling. If a user has explicit warehouse assignments, access is their intersection with this role scope; if not, the role scope supplies the effective warehouse set.'
       )}</p>
       <div class="o_field">
         <label for="roleScopeMode">${tx('طريقة تحديد النطاق', 'Scope mode')}</label>
