@@ -8,8 +8,22 @@ on:
     paths:
       - 'electron/**'
       - 'scripts/**'
+      - 'assets/OW Monogram on Plum App Icon.png'
       - 'assets/logo.png'
       - 'index.html'
+      - 'manifest.webmanifest'
+      - 'core-toast.js'
+      - 'core-ui.js'
+      - 'core-router.js'
+      - 'core-registry.js'
+      - 'core-utils.js'
+      - 'core-i18n.js'
+      - 'core-supabase.js'
+      - 'core-auth.js'
+      - 'core-store.js'
+      - 'core-rbac.js'
+      - 'page-facilities.js'
+      - 'core-api-supabase.js'
       - 'SQLite-db.js'
       - 'sw.js'
       - 'package.json'
@@ -20,8 +34,22 @@ on:
     paths:
       - 'electron/**'
       - 'scripts/**'
+      - 'assets/OW Monogram on Plum App Icon.png'
       - 'assets/logo.png'
       - 'index.html'
+      - 'manifest.webmanifest'
+      - 'core-toast.js'
+      - 'core-ui.js'
+      - 'core-router.js'
+      - 'core-registry.js'
+      - 'core-utils.js'
+      - 'core-i18n.js'
+      - 'core-supabase.js'
+      - 'core-auth.js'
+      - 'core-store.js'
+      - 'core-rbac.js'
+      - 'page-facilities.js'
+      - 'core-api-supabase.js'
       - 'SQLite-db.js'
       - 'sw.js'
       - 'package.json'
@@ -29,6 +57,7 @@ on:
 
 permissions:
   contents: read
+  actions: write
 
 jobs:
   build:
@@ -89,3 +118,33 @@ jobs:
           path: dist/*.exe
           if-no-files-found: error
           retention-days: 30
+  cleanup-old-installer-artifacts:
+    name: Keep only the latest OW installer set
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Remove superseded OW installer artifacts
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const names = new Set([
+              'OW-Legacy-Windows7-ia32-Setup',
+              'OW-Legacy-Windows7-x64-Setup',
+              'OW-Current-Windows10-11-ia32-Setup',
+              'OW-Current-Windows10-11-x64-Setup'
+            ]);
+            const artifacts = await github.paginate(github.rest.actions.listArtifactsForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100
+            });
+            for (const artifact of artifacts) {
+              if (names.has(artifact.name) && artifact.workflow_run?.id !== context.runId) {
+                await github.rest.actions.deleteArtifact({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  artifact_id: artifact.id
+                });
+                core.info('Removed superseded artifact: ' + artifact.name + ' (' + artifact.id + ')');
+              }
+            }
