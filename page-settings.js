@@ -1590,7 +1590,7 @@ function bind(_, main) {
     reload();
   };
   const authGrantSearch = main.querySelector('#authGrantSearch');
-  if (authGrantSearch) authGrantSearch.oninput = updateGrantFilter;
+  if (authGrantSearch) authGrantSearch.onchange = updateGrantFilter;
   ['authGrantSubject', 'authGrantEffect', 'authGrantStatus'].forEach(id => {
     const control = main.querySelector('#' + id);
     if (control) control.onchange = updateGrantFilter;
