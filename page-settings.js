@@ -581,7 +581,7 @@ function renderAuthorization(banned) {
             ]
           })),
           { emptyTitle: tx('لا توجد قرارات مسجلة في الفترة المحددة', 'No decisions recorded in this period') }
-        ), '', 'flush-body')}
+        )}`, '', 'flush-body')}
     </div>`;
 }
 
