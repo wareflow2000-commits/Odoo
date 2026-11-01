@@ -1,0 +1,64 @@
+{
+  "name": "ow-wms-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "OW Warehouse Management System desktop wrapper",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "prepare:vendor": "node scripts/prepare-vendor.cjs",
+    "prepare:icon": "node scripts/create-icon.cjs",
+    "prepare:desktop": "npm run prepare:vendor && npm run prepare:icon",
+    "build:win": "electron-builder --win nsis"
+  },
+  "devDependencies": {
+    "electron-builder": "26.0.12",
+    "png-to-ico": "2.1.8"
+  },
+  "build": {
+    "appId": "com.ow.wms",
+    "productName": "OW",
+    "executableName": "OW",
+    "asar": true,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "electron/**/*",
+      "assets/**/*",
+      "vendor/**/*",
+      "**/*.html",
+      "**/*.js",
+      "**/*.cjs",
+      "**/*.css",
+      "**/*.json",
+      "**/*.webmanifest",
+      "**/*.svg",
+      "!tests/**",
+      "!phone/**",
+      "!.github/**",
+      "!scripts/**",
+      "!dist/**",
+      "!node_modules/**",
+      "!**/*.map",
+      "!**/*.md"
+    ],
+    "win": {
+      "icon": "assets/ow.ico",
+      "target": [
+        {
+          "target": "nsis"
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "OW",
+      "uninstallDisplayName": "OW — إدارة المستودعات"
+    },
+    "artifactName": "OW-${version}-${arch}-Setup.${ext}"
+  }
+}

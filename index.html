@@ -9,7 +9,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" type="image/png" href="assets/logo.png">
 <link rel="apple-touch-icon" href="assets/logo.png">
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+<link rel="stylesheet" href="vendor/fontawesome/css/all.min.css" onerror="this.onerror=null;this.href='https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css'">
 <link rel="stylesheet" href="style-base.css">
 <link rel="stylesheet" href="style-shell.css">
 <link rel="stylesheet" href="style-wms.css">
@@ -80,7 +80,7 @@
 <!-- Classic scripts: expose Supabase & optional SQLite before the module graph -->
 <script src="supabase-client.js"></script>
 <script src="SQLite-db.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.13.0/sql-wasm.js" crossorigin="anonymous"></script>
+<script src="vendor/sql-wasm.js" crossorigin="anonymous" onload="if(!window.__OW_SQL_WASM_BASE)window.__OW_SQL_WASM_BASE=location.href.slice(0,location.href.lastIndexOf('/')+1)+'vendor/'" onerror="this.onerror=null;this.onload=function(){window.__OW_SQL_WASM_BASE='https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.13.0/'};this.src='https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.13.0/sql-wasm.js'"></script>
 <script>
   // Optional durable local mirror (SQLite WASM + OPFS). The app works on
   // localStorage alone if this fails, so failures are silent.

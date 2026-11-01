@@ -1,9 +1,16 @@
 /* OW service worker: app-shell caching only. Remote business data is never cached here. */
 'use strict';
-const CACHE_NAME = 'ow-wms-shell-v13-9-59-r13';
+const CACHE_NAME = 'ow-wms-shell-v13-9-59-r14';
 const APP_SHELL = [
   './index.html',
   './manifest.webmanifest',
+  './vendor/sql-wasm.js',
+  './vendor/sql-wasm.wasm',
+  './vendor/fontawesome/css/all.min.css',
+  './vendor/fontawesome/webfonts/fa-brands-400.woff2',
+  './vendor/fontawesome/webfonts/fa-regular-400.woff2',
+  './vendor/fontawesome/webfonts/fa-solid-900.woff2',
+  './vendor/fontawesome/webfonts/fa-v4compatibility.woff2',
   './assets/logo.png',
   './style-base.css',
   './style-shell.css',
@@ -57,9 +64,14 @@ self.addEventListener('install', event => {
       // cache.add()/addAll() may reuse a stale HTTP-cache response. Force a
       // network reload so a new service worker never pins an old module set.
       await Promise.all(APP_SHELL.map(async url => {
-        const response = await fetch(url, { cache: 'reload', credentials: 'same-origin' });
-        if (!response.ok) throw new Error(`Shell asset failed: ${url}`);
-        await cache.put(url, response);
+        try {
+          const response = await fetch(url, { cache: 'reload', credentials: 'same-origin' });
+          if (!response.ok) throw new Error(`Shell asset failed: ${url}`);
+          await cache.put(url, response);
+        } catch (error) {
+          // Vendor assets are bundled in desktop builds; the hosted PWA may use its CDN fallback.
+          if (!url.startsWith('./vendor/')) throw error;
+        }
       }));
     }).then(() => self.skipWaiting())
   );

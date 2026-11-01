@@ -21,6 +21,8 @@ jobs:
           npm init -y
           npm install --no-save playwright
           npx playwright install --with-deps chromium
+      - name: Prepare local runtime assets
+        run: npm run prepare:vendor
       - name: Serve application
         run: |
           python3 -m http.server 4173 > /tmp/orshap-http.log 2>&1 &
