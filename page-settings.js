@@ -48,7 +48,8 @@ const F = {
   authorizationLoaded: false,
   authorizationLoading: false,
   authorizationError: '',
-  authorizationGrantFilter: { subject: 'ALL', effect: 'ALL', status: 'ALL', search: '' }
+  authorizationGrantFilter: { subject: 'ALL', effect: 'ALL', status: 'ALL', search: '' },
+  authorizationDecisionFilter: { decision: 'ALL', breakGlass: 'ALL', search: '' }
 };
 
 const LIVE_BACKUP_META = 'orshap_live_backup_meta_v1';
@@ -466,6 +467,17 @@ function renderAuthorization(banned) {
       && (filter.status === 'ALL' || status === filter.status)
       && (!filter.search || searchText.includes(filter.search.trim().toLowerCase()));
   });
+  const decisionFilter = F.authorizationDecisionFilter;
+  const decisionRows = decisions.filter(d => {
+    const searchText = [
+      d.action_key, d.resource_type, d.resource_id, d.decision_reason,
+      actorName(d.actor_user_id), warehouseName(d.warehouse_id), d.matched_grant_id
+    ].join(' ').toLowerCase();
+    return (decisionFilter.decision === 'ALL' || d.decision === decisionFilter.decision)
+      && (decisionFilter.breakGlass === 'ALL'
+        || (decisionFilter.breakGlass === 'YES') === !!d.break_glass)
+      && (!decisionFilter.search || searchText.includes(decisionFilter.search.trim().toLowerCase()));
+  });
   return `
     <div class="o_stack">
       ${card(`<i class="fa-solid fa-shield-halved"></i> ${tx('منح التفويض', 'Authorization grants')}`,
@@ -526,7 +538,22 @@ function renderAuthorization(banned) {
         )}`,
         `<button class="o_btn o_btn_primary o_btn_sm" id="authGrantAdd" ${canWrite ? '' : 'disabled'}><i class="fa-solid fa-plus"></i> ${tx('منحة جديدة', 'New grant')}</button>`, 'flush-body')}
       ${card(`<i class="fa-solid fa-clipboard-list"></i> ${tx('سجل قرارات التفويض — آخر 30 يوماً', 'Authorization decisions — last 30 days')}`,
-        table(
+        `<div class="o_filter_bar" style="margin:10px 0">
+          <input id="authDecisionSearch" class="o_filter_input" value="${esc(decisionFilter.search)}"
+            placeholder="${tx('بحث في المستخدم أو الإجراء أو السبب…', 'Search actor, action or reason…')}">
+          <select id="authDecisionResult" class="o_filter_select">
+            <option value="ALL" ${decisionFilter.decision === 'ALL' ? 'selected' : ''}>${tx('كل القرارات', 'All decisions')}</option>
+            <option value="ALLOW" ${decisionFilter.decision === 'ALLOW' ? 'selected' : ''}>ALLOW</option>
+            <option value="DENY" ${decisionFilter.decision === 'DENY' ? 'selected' : ''}>DENY</option>
+          </select>
+          <select id="authDecisionBreakGlass" class="o_filter_select">
+            <option value="ALL" ${decisionFilter.breakGlass === 'ALL' ? 'selected' : ''}>${tx('كل أنواع التنفيذ', 'All execution types')}</option>
+            <option value="YES" ${decisionFilter.breakGlass === 'YES' ? 'selected' : ''}>${tx('تجاوز طارئ', 'Break-glass')}</option>
+            <option value="NO" ${decisionFilter.breakGlass === 'NO' ? 'selected' : ''}>${tx('عادي', 'Regular')}</option>
+          </select>
+          <span class="o_hint">${fmtNum(decisionRows.length)} / ${fmtNum(decisions.length)}</span>
+        </div>
+        ${table(
           [
             { label: tx('التاريخ', 'Date') },
             { label: tx('المستخدم', 'Actor') },
@@ -538,7 +565,7 @@ function renderAuthorization(banned) {
             { label: tx('المنحة المطابقة', 'Matched grant') },
             { label: tx('سياق القرار', 'Decision context') }
           ],
-          decisions.map(d => ({
+          decisionRows.map(d => ({
             cells: [
               fmtDateTime(d.created_at),
               esc(actorName(d.actor_user_id)),
@@ -1611,6 +1638,20 @@ function bind(_, main) {
   ['authGrantSubject', 'authGrantEffect', 'authGrantStatus'].forEach(id => {
     const control = main.querySelector('#' + id);
     if (control) control.onchange = updateGrantFilter;
+  });
+  const updateDecisionFilter = () => {
+    F.authorizationDecisionFilter = {
+      search: main.querySelector('#authDecisionSearch')?.value || '',
+      decision: main.querySelector('#authDecisionResult')?.value || 'ALL',
+      breakGlass: main.querySelector('#authDecisionBreakGlass')?.value || 'ALL'
+    };
+    reload();
+  };
+  const authDecisionSearch = main.querySelector('#authDecisionSearch');
+  if (authDecisionSearch) authDecisionSearch.onchange = updateDecisionFilter;
+  ['authDecisionResult', 'authDecisionBreakGlass'].forEach(id => {
+    const control = main.querySelector('#' + id);
+    if (control) control.onchange = updateDecisionFilter;
   });
   const authGrantAdd = main.querySelector('#authGrantAdd');
   if (authGrantAdd) authGrantAdd.onclick = authorizationGrantModal;
