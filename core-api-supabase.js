@@ -184,7 +184,7 @@ export async function deleteStorageArea(id) {
   store.emit();
 }
 
-export const createSection = export const createSection = (p) => insertRow('sections', {
+export const createSection = (p) => insertRow('sections', {
   warehouse_id: p.warehouse_id, zone_id: p.zone_id,
   code: String(p.code).trim(), name: String(p.name).trim(), created_at: new Date().toISOString()
 });
