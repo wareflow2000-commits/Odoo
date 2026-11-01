@@ -102,6 +102,73 @@ const fs = require('fs');
       throw new Error('Institutional role warehouse-scope UI checks failed: ' + JSON.stringify(roleScopeUiChecks));
     }
 
+    // Exercise grant-form constraints and subject/scope transitions without saving.
+    const authorizationGrantUiChecks = await page.evaluate(async () => {
+      const { store } = await import('/core-store.js');
+      const original = {
+        session: window.__session,
+        profiles: store.data.profiles,
+        permissions: store.data.permissions,
+        warehouses: store.data.warehouses
+      };
+      const adminId = '12121212-1212-4212-8212-121212121212';
+      try {
+        window.__session = {
+          id: adminId, role: 'SUPER_ADMIN',
+          profile: { id: adminId, role: 'SUPER_ADMIN' }
+        };
+        store.data.profiles = [{
+          id: '13131313-1313-4313-8313-131313131313',
+          role: 'CLERK', status: 'ACTIVE', name: 'Grant UI fixture'
+        }];
+        store.data.permissions = [
+          { key: 'action:transaction:issue:create', description: 'Create issue' },
+          { key: 'page:inventory:access', description: 'Inventory page' }
+        ];
+        store.data.warehouses = [{
+          id: '14141414-1414-4414-8414-141414141414',
+          code: 'AUTH-UI', name: 'Authorization UI fixture'
+        }];
+        window.OW.wms.authorizationGrantModal();
+        const form = document.querySelector('#authorizationGrantForm');
+        if (!form) throw new Error('Authorization grant form did not open');
+        const subject = form.querySelector('#authSubjectType');
+        const scope = form.querySelector('#authScopeType');
+        const allScope = scope.querySelector('option[value="ALL"]');
+        const expiry = form.querySelector('[name="valid_until"]');
+        const resourceType = form.querySelector('[name="resource_type"]');
+        const warehouse = form.querySelector('[name="warehouse_id"]');
+        const conditions = form.querySelector('[name="conditions"]');
+        const userGrantRules = subject.value === 'USER'
+          && allScope.disabled && expiry.required && resourceType.required
+          && resourceType.readOnly && warehouse.required
+          && resourceType.value === 'transaction';
+        subject.value = 'ROLE';
+        subject.dispatchEvent(new Event('change', { bubbles: true }));
+        const roleGrantRules = !allScope.disabled && !expiry.required
+          && !resourceType.readOnly && !warehouse.required;
+        scope.value = 'CONTEXT';
+        scope.dispatchEvent(new Event('change', { bubbles: true }));
+        const contextRules = conditions.required
+          && form.querySelector('#authConditionsWrap').style.display !== 'none';
+        subject.value = 'USER';
+        subject.dispatchEvent(new Event('change', { bubbles: true }));
+        const userContextRules = allScope.disabled && expiry.required
+          && warehouse.required && conditions.required;
+        document.querySelector('#authGrantCancel')?.click();
+        return { userGrantRules, roleGrantRules, contextRules, userContextRules };
+      } finally {
+        document.querySelector('#authGrantCancel')?.click();
+        window.__session = original.session;
+        store.data.profiles = original.profiles;
+        store.data.permissions = original.permissions;
+        store.data.warehouses = original.warehouses;
+      }
+    });
+    if (Object.values(authorizationGrantUiChecks).some(value => value !== true)) {
+      throw new Error('Authorization grant UI checks failed: ' + JSON.stringify(authorizationGrantUiChecks));
+    }
+
     // Reconcile the item movement summary using isolated ledger fixtures.
     // Internal transfer movements must not be counted as consumption or supplier receipts.
     const transferReportChecks = await page.evaluate(async () => {
