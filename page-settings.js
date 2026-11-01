@@ -1599,10 +1599,13 @@ function authorizationGrantModal() {
       <select name="scope_type" id="authScopeType">
         <option value="WAREHOUSE" selected>WAREHOUSE</option><option value="OWN">OWN</option><option value="CONTEXT">CONTEXT</option><option value="ALL">ALL</option>
       </select></div>
-    <div class="o_field full"><label>${tx('شروط السياق JSON (لنطاق CONTEXT)', 'Context conditions JSON (for CONTEXT scope)')}</label>
-      <textarea name="conditions" rows="3" placeholder='{"status":"PENDING_APPROVAL"}'></textarea></div>
-    <div class="o_field"><label>${tx('تاريخ الانتهاء (إلزامي لمنح المستخدم)', 'Expiry date (required for user grants)')}</label><input type="datetime-local" name="valid_until"></div>
+    <div class="o_field full" id="authConditionsWrap"><label>${tx('شروط السياق JSON (إلزامية لنطاق CONTEXT)', 'Context conditions JSON (required for CONTEXT scope)')}</label>
+      <textarea name="conditions" rows="3" placeholder='{"status":"PENDING_APPROVAL"}'></textarea>
+      <small class="o_hint">${tx('تُطابق الشروط سياق العملية المرسل إلى محرك التفويض؛ استخدم أسماء حقول معروفة في سياق الإجراء.', 'Conditions are matched against the context passed to the authorization engine; use fields actually supplied by the action context.')}</small></div>
+    <div class="o_field"><label>${tx('يبدأ التفويض في', 'Grant starts at')}</label><input type="datetime-local" name="valid_from"></div>
+    <div class="o_field"><label>${tx('ينتهي التفويض في (إلزامي لمنح المستخدم)', 'Grant expires at (required for user grants)')}</label><input type="datetime-local" name="valid_until"></div>
     <div class="o_field full"><label>${tx('سبب منح التفويض', 'Grant reason')}</label><textarea name="reason" required rows="2"></textarea></div>
+    <div class="o_field full"><div class="o_alert o_alert_info">${tx('المنع الصريح له الأولوية على السماح. نطاق الدور يظل مقيداً بتعيينات المستودعات الفعلية للمستخدم، ولا تمنح هذه المنحة تجاوزاً تلقائياً لفصل المهام أو الاعتماد الذاتي.', 'An explicit DENY takes precedence over ALLOW. Role scope remains constrained by the user’s actual warehouse assignments; this grant does not automatically bypass segregation of duties or self-approval controls.')}</div></div>
   </form>`;
   modal({
     title: `<i class="fa-solid fa-shield-halved"></i> ${tx('إنشاء منحة تفويض', 'Create authorization grant')}`,
@@ -1649,6 +1652,8 @@ function authorizationGrantModal() {
           : 'Optional for global role grants';
         warehouseSelect.required = isUserGrant || scopeSelect.value === 'WAREHOUSE';
         validUntilInput.required = isUserGrant;
+        form.querySelector('[name="conditions"]').required = scopeSelect.value === 'CONTEXT';
+        form.querySelector('#authConditionsWrap').style.display = scopeSelect.value === 'CONTEXT' ? '' : 'none';
         warehouseSelect.disabled = !isUserGrant && scopeSelect.value === 'ALL';
       };
       subjectType.onchange = syncSubject;
@@ -1671,9 +1676,29 @@ function authorizationGrantModal() {
           return;
         }
         const resourceId = data.resource_id.trim() || null;
+        const validFrom = data.valid_from ? new Date(data.valid_from) : new Date();
+        const validUntil = data.valid_until ? new Date(data.valid_until) : null;
+        if (Number.isNaN(validFrom.getTime()) || (validUntil && Number.isNaN(validUntil.getTime()))
+            || (validUntil && validUntil <= validFrom)) {
+          toast(tx('فترة صلاحية التفويض غير صحيحة؛ يجب أن يكون الانتهاء بعد تاريخ البداية.', 'Invalid grant validity window; expiry must be later than the start.'), 'error');
+          return;
+        }
         if (data.subject_type === 'USER'
-            && (data.scope_type === 'ALL' || !data.warehouse_id || !data.resource_type.trim())) {
-          toast(tx('منحة المستخدم تتطلب نوع مورد ومستودعاً واحداً ونطاق بيانات محدداً وتاريخ انتهاء.', 'A user grant requires a resource type, one warehouse, a bounded data scope and an expiry date.'), 'warning');
+            && (data.scope_type === 'ALL' || !data.warehouse_id || !data.resource_type.trim()
+              || !validUntil || validUntil <= new Date())) {
+          toast(tx('منحة المستخدم تتطلب نوع مورد ومستودعاً واحداً ونطاقاً محدوداً وتاريخ انتهاء مستقبلياً.', 'A user grant requires a resource type, one warehouse, a bounded scope and a future expiry.'), 'warning');
+          return;
+        }
+        if (data.scope_type === 'WAREHOUSE' && !data.warehouse_id) {
+          toast(tx('نطاق المستودع يتطلب اختيار مستودع.', 'WAREHOUSE scope requires a warehouse.'), 'warning');
+          return;
+        }
+        if (data.scope_type === 'CONTEXT' && (!conditions || Object.keys(conditions).length === 0)) {
+          toast(tx('نطاق السياق يتطلب شروط JSON غير فارغة.', 'CONTEXT scope requires non-empty JSON conditions.'), 'warning');
+          return;
+        }
+        if (resourceId && !data.resource_type.trim()) {
+          toast(tx('حدد نوع المورد قبل تحديد معرّف السجل.', 'Choose a resource type before specifying a record ID.'), 'warning');
           return;
         }
         if (resourceId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(resourceId)) {
@@ -1694,8 +1719,8 @@ function authorizationGrantModal() {
             p_warehouse_id: data.warehouse_id || null,
             p_scope_type: data.scope_type,
             p_conditions: conditions,
-            p_valid_from: new Date().toISOString(),
-            p_valid_until: data.valid_until ? new Date(data.valid_until).toISOString() : null,
+            p_valid_from: validFrom.toISOString(),
+            p_valid_until: validUntil ? validUntil.toISOString() : null,
             p_reason: data.reason.trim()
           });
           close();
