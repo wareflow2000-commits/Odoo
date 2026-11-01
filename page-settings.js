@@ -500,7 +500,8 @@ function renderAuthorization(banned) {
             { label: tx('المستودع', 'Warehouse') },
             { label: tx('الأثر', 'Effect') },
             { label: tx('النطاق', 'Scope') },
-            { label: tx('الصلاحية حتى', 'Valid until') },
+            { label: tx('يبدأ في', 'Valid from') },
+            { label: tx('ينتهي في', 'Valid until') },
             { label: tx('الحالة', 'Status') },
             { label: '', width: '76px' }
           ],
@@ -512,6 +513,7 @@ function renderAuthorization(banned) {
               esc(warehouseName(g.warehouse_id)),
               badge(g.effect, g.effect === 'DENY' ? 'red' : 'green'),
               `${esc(g.scope_type)}${g.scope_type === 'CONTEXT' ? `<div class="o_cell_sub">${esc(JSON.stringify(g.conditions || {}))}</div>` : ''}`,
+              g.valid_from ? fmtDateTime(g.valid_from) : '—',
               g.valid_until ? fmtDateTime(g.valid_until) : '—',
               grantStatus(g) === 'REVOKED' ? badge(tx('ملغاة', 'Revoked'), 'red')
                 : grantStatus(g) === 'EXPIRED' ? badge(tx('منتهية', 'Expired'), 'gray')
