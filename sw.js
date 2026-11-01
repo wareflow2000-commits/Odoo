@@ -1,9 +1,16 @@
 /* OW service worker: app-shell caching only. Remote business data is never cached here. */
 'use strict';
-const CACHE_NAME = 'ow-wms-shell-v13-9-59-r13';
+const CACHE_NAME = 'ow-wms-shell-v13-9-59-r14';
 const APP_SHELL = [
   './index.html',
   './manifest.webmanifest',
+  './vendor/sql-wasm.js',
+  './vendor/sql-wasm.wasm',
+  './vendor/fontawesome/css/all.min.css',
+  './vendor/fontawesome/webfonts/fa-brands-400.woff2',
+  './vendor/fontawesome/webfonts/fa-regular-400.woff2',
+  './vendor/fontawesome/webfonts/fa-solid-900.woff2',
+  './vendor/fontawesome/webfonts/fa-v4compatibility.woff2',
   './assets/logo.png',
   './style-base.css',
   './style-shell.css',
